@@ -170,6 +170,11 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
+# Allow the custom tenant header and any other headers that browsers may request.
+# Using '*' avoids preflight failures for custom headers such as x-tenant-id.
+CORS_ALLOW_HEADERS = ['*']
+CORS_PREFLIGHT_MAX_AGE = 86400
+
 # CSRF settings (needed when frontend and backend are on different domains)
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()
