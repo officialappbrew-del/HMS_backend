@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db import IntegrityError
 from django.db.models import Count, Sum, Q
 from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_email
@@ -381,18 +382,24 @@ def create_tenant_admin(request, tenant_id):
         username = f"{original_username}{counter}"
         counter += 1
 
-    admin_user = TenantUser.objects.create(
-        tenant=tenant,
-        username=username,
-        email=email,
-        first_name=first_name,
-        last_name=last_name,
-        phone=data.get('phone', ''),
-        role='admin',
-        employee_id=data.get('employee_id') or None,
-        is_staff=True,
-        is_active=True
-    )
+    try:
+        admin_user = TenantUser.objects.create(
+            tenant=tenant,
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            phone=data.get('phone', ''),
+            role='admin',
+            employee_id=data.get('employee_id') or None,
+            is_staff=True,
+            is_active=True
+        )
+    except IntegrityError:
+        return Response(
+            {'error': f'A user with email ({email}) already exists. Please use a different email address.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     admin_user.set_password(password)
     admin_user.save()
     admin_user.refresh_from_db()

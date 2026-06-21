@@ -45,7 +45,7 @@ facility_type, facility_type_created = FacilityType.objects.get_or_create(
 subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
     code='PUBLIC_FREE',
     defaults={
-        'name': 'Public Free Plan',
+        'name': '1Public Free Plan',
         'description': 'Free plan for the public/system tenant',
         'price_monthly': 0,
         'price_quarterly': 0,
@@ -65,11 +65,12 @@ subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
 public_tenant, tenant_created = Tenant.objects.get_or_create(
     schema_name='public',
     defaults={
-        'name': 'Public Tenant',
-        'code': 'PUBLIC',
-        'domain': 'localhost',
-        'email': 'public@localhost',
-        'phone': '+1234567890',
+        'name': 'Public Tenant 1',
+        'code': 'PUBLIC1',
+        'domain': 'hms-backend-l09g.onrender.com',
+        # 'domain': 'localhost',
+        'email': '1public@localhost',
+        'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
         'city': 'System City',
@@ -102,7 +103,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
 # Create the domain for the public tenant
 TenantDomain.objects.get_or_create(
     tenant=public_tenant,
-    domain='localhost',
+    domain='hms-backend-l09g.onrender.com',
+    # domain='localhost',
     defaults={'is_primary': True},
 )
 
