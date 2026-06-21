@@ -159,23 +159,39 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS settings
-CORS_ALLOW_ALL_ORIGINS = DEBUG  # Allow all in development
-if not DEBUG:
-    CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000').split(',')
-
-# Allow custom headers for tenant-based authentication
-CORS_ALLOW_HEADERS = [
-    'accept',
-    'accept-encoding',
-    'authorization',
-    'content-type',
-    'dnt',
-    'origin',
-    'user-agent',
-    'x-csrftoken',
-    'x-requested-with',
-    'x-tenant-id',  # Custom header for tenant-based auth
+# Allow frontend origins to access the API
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        'CORS_ALLOWED_ORIGINS',
+        default='http://localhost:5173,http://localhost:9090'
+    ).split(',')
+    if origin.strip()
 ]
+
+# CSRF settings (needed when frontend and backend are on different domains)
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        'CSRF_TRUSTED_ORIGINS',
+        default='http://localhost:5173,http://localhost:9090'
+    ).split(',')
+    if origin.strip()
+]
+CSRF_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SAMESITE = 'None'
+CSRF_COOKIE_HTTPONLY = False
+
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = (
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT'
+)
 
 # REST Framework settings
 REST_FRAMEWORK = {
