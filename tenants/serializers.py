@@ -7,6 +7,8 @@ from django.conf import settings
 import re
 import jwt
 
+
+
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
@@ -312,7 +314,6 @@ class TenantUserSerializer(serializers.ModelSerializer):
         instance.save()
         return instance
 
-
 class DepartmentSerializer(serializers.ModelSerializer):
     """Serializer for departments."""
     tenant_name = serializers.CharField(source='tenant.name', read_only=True)
@@ -320,9 +321,89 @@ class DepartmentSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Department
-        fields = '__all__'
+        # Exclude tenant and let it be set in validate/create
+        exclude = ('tenant',)
         read_only_fields = ['created_at', 'updated_at']
 
+    def _resolve_tenant(self):
+        """Resolve tenant from context or request - identical to TenantUserSerializer."""
+        tenant = self.context.get('tenant')
+        if tenant:
+            return tenant
+
+        request = self.context.get('request')
+        if not request:
+            return None
+
+        # 1) Normal request user context
+        user = getattr(request, 'user', None)
+        if user:
+            tenant = getattr(user, 'tenant', None)
+            if tenant:
+                return tenant
+
+            tenant_user = getattr(user, 'tenant_user', None)
+            if tenant_user and getattr(tenant_user, 'tenant', None):
+                return tenant_user.tenant
+
+            tenant_public_id = getattr(user, 'tenant_public_id', None)
+            if tenant_public_id:
+                tenant = Tenant.objects.filter(public_id=tenant_public_id).first()
+                if tenant:
+                    return tenant
+
+            tenant_id = getattr(user, 'tenant_id', None)
+            if tenant_id:
+                tenant = Tenant.objects.filter(public_id=tenant_id).first()
+                if tenant is None and str(tenant_id).isdigit():
+                    tenant = Tenant.objects.filter(id=int(tenant_id)).first()
+                if tenant:
+                    return tenant
+
+        # 2) Fallback: decode JWT claims directly from the Authorization header.
+        auth_header = request.META.get('HTTP_AUTHORIZATION', '') if request else ''
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ', 1)[1]
+            try:
+                payload = jwt.decode(
+                    token,
+                    settings.SIMPLE_JWT['SIGNING_KEY'],
+                    algorithms=['HS256'],
+                    options={'verify_exp': False}
+                )
+                tenant_public_id = payload.get('tenant_public_id') or payload.get('tenant_id')
+                if tenant_public_id:
+                    tenant = Tenant.objects.filter(public_id=tenant_public_id).first()
+                    if tenant is None and str(tenant_public_id).isdigit():
+                        tenant = Tenant.objects.filter(id=int(tenant_public_id)).first()
+                    if tenant:
+                        return tenant
+            except Exception:
+                pass
+
+        return None
+
+    def validate(self, attrs):
+        """Validate and set tenant from context."""
+        tenant = self._resolve_tenant()
+        if not tenant:
+            raise serializers.ValidationError({"tenant": ["This field is required."]})
+        
+        attrs['tenant'] = tenant
+        return attrs
+    
+    def create(self, validated_data):
+        """Create department with tenant from context."""
+        tenant = validated_data.get('tenant')
+        if not tenant:
+            tenant = self._resolve_tenant()
+            if not tenant:
+                raise serializers.ValidationError({"tenant": ["This field is required."]})
+            validated_data['tenant'] = tenant
+        
+        return super().create(validated_data)
+    
+    
 
 class TenantSettingSerializer(serializers.ModelSerializer):
     """Serializer for tenant settings."""

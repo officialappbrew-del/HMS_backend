@@ -13,6 +13,7 @@ from django.core.validators import validate_email
 from django.utils import timezone
 from django.conf import settings
 from rest_framework.parsers import JSONParser
+from rest_framework import serializers
 
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
@@ -1149,12 +1150,17 @@ class TenantUserViewSet(viewsets.ModelViewSet):
         
         return Response({'detail': 'Account unlocked'})
 
-
 class DepartmentViewSet(viewsets.ModelViewSet):
     """ViewSet for managing departments."""
     serializer_class = DepartmentSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
+    
+    def get_serializer_context(self):
+        """Add request to serializer context - this is crucial!"""
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
     
     def get_queryset(self):
         user = self.request.user
@@ -1182,6 +1188,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         return Department.objects.none()
     
     def perform_create(self, serializer):
+        """Create department with proper tenant validation."""
         user = self.request.user
         
         if hasattr(user, 'tenant_user') and user.tenant_user:
@@ -1189,13 +1196,37 @@ class DepartmentViewSet(viewsets.ModelViewSet):
             if user.tenant_user.role not in ['admin', 'hr_manager']:
                 raise permissions.PermissionDenied("Only admins and HR managers can create departments")
             
-            # Set tenant from current user
-            serializer.save(tenant=user.tenant_user.tenant)
+            # The tenant will be resolved in the serializer
+            serializer.save()
         else:
             # Global admin creating department
-            serializer.save()
+            tenant_id = self.request.data.get('tenant')
+            if not tenant_id:
+                # If no tenant ID provided, try to resolve from user
+                tenant = self._resolve_tenant_from_user(user)
+                if tenant:
+                    serializer.save(tenant=tenant)
+                else:
+                    raise serializers.ValidationError({"tenant": ["Tenant ID is required for global admin."]})
+            else:
+                try:
+                    tenant = Tenant.objects.get(public_id=tenant_id)
+                    serializer.save(tenant=tenant)
+                except Tenant.DoesNotExist:
+                    raise serializers.ValidationError({"tenant": ["Invalid tenant ID."]})
+    
+    def _resolve_tenant_from_user(self, user):
+        """Helper method to resolve tenant from user."""
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            return user.tenant_user.tenant
+        
+        # Check if user has tenant directly attached
+        if hasattr(user, 'tenant'):
+            return user.tenant
+        
+        return None
 
-
+        
 class TenantSettingViewSet(viewsets.ModelViewSet):
     """ViewSet for managing tenant settings."""
     serializer_class = TenantSettingSerializer
