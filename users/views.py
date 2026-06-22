@@ -435,22 +435,34 @@ class AuthenticationView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
+        # Fix: Ensure request.data is a dictionary
+        data = request.data
+        if isinstance(data, str):
+            try:
+                import json
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                return Response(
+                    {'error': 'Invalid JSON data. Please check your request body.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        
         # Tenant user login can now be done with only user_id + password.
-        if request.data.get('user_id') and request.data.get('password'):
-            return self.authenticate_tenant_user_by_user_id(request)
+        if data.get('user_id') and data.get('password'):
+            return self.authenticate_tenant_user_by_user_id(data, request)
 
         # Check if tenant domain is provided in body or header
-        tenant_domain = request.data.get('tenant_domain')
-        tenant_id = request.headers.get('X-Tenant-ID') or request.data.get('tenant_id')
+        tenant_domain = data.get('tenant_domain')
+        tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
         
         if tenant_domain or tenant_id:
             # Tenant user login
-            return self.authenticate_tenant_user(request, tenant_domain, tenant_id)
+            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id)
         else:
             # Global user login
-            return self.authenticate_global_user(request)
+            return self.authenticate_global_user(data, request)
     
-    def authenticate_tenant_user(self, request, tenant_domain=None, tenant_id=None):
+    def authenticate_tenant_user(self, data, request, tenant_domain=None, tenant_id=None):
         """Authenticate tenant user."""
         from django.db import connection
         
@@ -482,7 +494,7 @@ class AuthenticationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Check tenant status manually without relying on a mismatched schema field.
+        # Check tenant status
         if tenant.subscription_status not in {
             Tenant.SubscriptionStatus.ACTIVE,
             Tenant.SubscriptionStatus.TRIAL,
@@ -496,8 +508,8 @@ class AuthenticationView(APIView):
         connection.set_schema(tenant.schema_name)
 
         try:
-            identifier = request.data.get('user_id') or request.data.get('identifier') or request.data.get('username')
-            password = request.data.get('password')
+            identifier = data.get('user_id') or data.get('identifier') or data.get('username')
+            password = data.get('password')
 
             if not identifier or not password:
                 return Response(
@@ -555,12 +567,12 @@ class AuthenticationView(APIView):
         finally:
             connection.set_schema('public')
     
-    def authenticate_tenant_user_by_user_id(self, request):
+    def authenticate_tenant_user_by_user_id(self, data, request):
         """Authenticate a tenant user using only user_id + password."""
         from django.db import connection
 
-        user_id = request.data.get('user_id')
-        password = request.data.get('password')
+        user_id = data.get('user_id')
+        password = data.get('password')
 
         if not user_id or not password:
             return Response(
@@ -630,9 +642,10 @@ class AuthenticationView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    def authenticate_global_user(self, request):
+    def authenticate_global_user(self, data, request):
         """Authenticate global user."""
-        serializer = LoginSerializer(data=request.data)
+        # Fix: Pass the data dictionary to the serializer
+        serializer = LoginSerializer(data=data)
         
         if serializer.is_valid():
             user = serializer.validated_data['user']
@@ -649,15 +662,13 @@ class AuthenticationView(APIView):
                     'user_id': user.id,
                     'access_token': str(refresh.access_token),
                     'refresh_token': str(refresh),
-                    'two_fa_methods': self.get_available_2fa_methods(user)  # This was missing
+                    'two_fa_methods': self.get_available_2fa_methods(user)
                 })
             
             # No 2FA required, complete login
             return self.complete_login(user, request)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    # ADD THESE MISSING METHODS:
     
     def get_available_2fa_methods(self, user):
         """Get available 2FA methods for user."""
@@ -714,8 +725,8 @@ class AuthenticationView(APIView):
         else:
             ip = request.META.get('REMOTE_ADDR')
         return ip
-    
-     
+
+
 class TwoFAView(APIView):
     """Handle 2FA verification."""
     permission_classes = [permissions.AllowAny]

@@ -12,6 +12,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_email
 from django.utils import timezone
 from django.conf import settings
+from rest_framework.parsers import JSONParser
 
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
@@ -36,9 +37,9 @@ from django.db import connection
 
 
 class StandardPagination(PageNumberPagination):
-    page_size = 20
+    page_size = 25
     page_size_query_param = 'page_size'
-    max_page_size = 100
+    max_page_size = 50
 
 
 # Public endpoint for listing active tenants (for login page)
@@ -68,6 +69,262 @@ class PublicTenantListView(APIView):
         return Response(data)
 
 
+
+# class TenantViewSet(viewsets.ModelViewSet):
+#     """ViewSet for managing tenants (global admin only)."""
+#     queryset = Tenant.objects.all()
+#     serializer_class = TenantSerializer
+#     pagination_class = StandardPagination
+#     permission_classes = [IsSystemAdmin]
+#     lookup_field = 'public_id'
+    
+#     def get_queryset(self):
+#         user = self.request.user
+        
+#         # Filter by subscription status
+#         status_filter = self.request.query_params.get('status')
+#         if status_filter:
+#             self.queryset = self.queryset.filter(subscription_status=status_filter)
+        
+#         # Filter by NHIS accreditation
+#         nhis_filter = self.request.query_params.get('nhis_accreditation')
+#         if nhis_filter:
+#             self.queryset = self.queryset.filter(nhis_accreditation=nhis_filter)
+        
+#         # Search by name, code, or domain
+#         search = self.request.query_params.get('search')
+#         if search:
+#             self.queryset = self.queryset.filter(
+#                 Q(name__icontains=search) |
+#                 Q(code__icontains=search) |
+#                 Q(domain__icontains=search) |
+#                 Q(email__icontains=search)
+#             )
+        
+#         return self.queryset
+    
+#     def perform_create(self, serializer):
+#         with transaction.atomic():
+#             # Create tenant
+#             tenant = serializer.save()
+
+#             # Convert serializer data to JSON-safe values for audit logging
+#             audit_payload = serializer.data.copy()
+#             for key, value in audit_payload.items():
+#                 if hasattr(value, 'isoformat') and callable(value.isoformat):
+#                     audit_payload[key] = value.isoformat()
+#                 elif isinstance(value, list):
+#                     audit_payload[key] = [
+#                         item.isoformat() if hasattr(item, 'isoformat') and callable(item.isoformat) else item
+#                         for item in value
+#                     ]
+#                 elif isinstance(value, dict):
+#                     audit_payload[key] = {
+#                         inner_key: (
+#                             inner_value.isoformat()
+#                             if hasattr(inner_value, 'isoformat') and callable(inner_value.isoformat)
+#                             else inner_value
+#                         )
+#                         for inner_key, inner_value in value.items()
+#                     }
+            
+#             # Create audit log
+#             AuditLog.objects.create(
+#                 user=self.request.user,
+#                 action='create_tenant',
+#                 resource_type='tenant',
+#                 resource_id=str(tenant.id),
+#                 new_values=audit_payload
+#             )
+            
+#             # Create initial admin user
+#             admin_data = {
+#                 'username': f"admin@{tenant.domain.split('.')[0]}",
+#                 'email': tenant.email,
+#                 'first_name': 'Admin',
+#                 'last_name': tenant.name,
+#                 'role': 'admin',
+#                 'password': 'TempPass123!',
+#                 'is_staff': True,
+#             }
+            
+#             admin_user = TenantUser.objects.create(
+#                 tenant=tenant,
+#                 **admin_data
+#             )
+#             admin_user.set_password(admin_data['password'])
+#             admin_user.save()
+    
+#     def perform_update(self, serializer):
+#         old_tenant = self.get_object()
+#         old_data = TenantSerializer(old_tenant).data
+        
+#         tenant = serializer.save()
+        
+#         # Log the action
+#         AuditLog.objects.create(
+#             user=self.request.user,
+#             action='update_tenant',
+#             resource_type='tenant',
+#             resource_id=str(tenant.id),
+#             old_values=old_data,
+#             new_values=serializer.data
+#         )
+    
+#     def perform_destroy(self, instance):
+#         tenant_id = instance.id
+#         tenant_name = instance.name
+        
+#         # Log before deletion
+#         AuditLog.objects.create(
+#             user=self.request.user,
+#             action='delete_tenant',
+#             resource_type='tenant',
+#             resource_id=str(tenant_id),
+#             old_values={'name': tenant_name}
+#         )
+        
+#         instance.delete()
+    
+#     @action(detail=True, methods=['post'])
+#     def suspend(self, request, pk=None):
+#         """Suspend a tenant."""
+#         tenant = self.get_object()
+#         tenant.subscription_status = Tenant.SubscriptionStatus.SUSPENDED
+#         tenant.is_active = False
+#         tenant.save()
+        
+#         # Log action
+#         AuditLog.objects.create(
+#             user=request.user,
+#             action='suspend_tenant',
+#             resource_type='tenant',
+#             resource_id=str(tenant.id),
+#             new_values={'subscription_status': 'suspended', 'is_active': False}
+#         )
+        
+#         return Response({'detail': 'Tenant suspended successfully'})
+    
+#     @action(detail=True, methods=['post'])
+#     def activate(self, request, pk=None):
+#         """Activate a tenant."""
+#         tenant = self.get_object()
+#         tenant.subscription_status = Tenant.SubscriptionStatus.ACTIVE
+#         tenant.is_active = True
+#         tenant.save()
+        
+#         # Log action
+#         AuditLog.objects.create(
+#             user=request.user,
+#             action='activate_tenant',
+#             resource_type='tenant',
+#             resource_id=str(tenant.id),
+#             new_values={'subscription_status': 'active', 'is_active': True}
+#         )
+        
+#         return Response({'detail': 'Tenant activated successfully'})
+    
+#     @action(detail=True, methods=['post'])
+#     def cancel(self, request, pk=None):
+#         """Cancel tenant subscription."""
+#         tenant = self.get_object()
+#         tenant.subscription_status = Tenant.SubscriptionStatus.CANCELLED
+#         tenant.is_active = False
+#         tenant.save()
+        
+#         # Log action
+#         AuditLog.objects.create(
+#             user=request.user,
+#             action='cancel_tenant',
+#             resource_type='tenant',
+#             resource_id=str(tenant.id),
+#             new_values={'subscription_status': 'cancelled', 'is_active': False}
+#         )
+        
+#         return Response({'detail': 'Tenant subscription cancelled'})
+    
+#     @action(detail=True, methods=['get'])
+#     def summary(self, request, pk=None):
+#         """Get tenant summary statistics."""
+#         tenant = self.get_object()
+        
+#         # Get statistics
+#         user_count = TenantUser.objects.filter(tenant=tenant).count()
+#         # patient_count = Patient.objects.filter(tenant=tenant).count()  # Will be added later
+#         patient_count = 0
+#         department_count = Department.objects.filter(tenant=tenant).count()
+#         active_modules_count = TenantModule.objects.filter(
+#             tenant=tenant, is_enabled=True
+#         ).count()
+        
+#         # Get last backup
+#         last_backup = TenantBackup.objects.filter(
+#             tenant=tenant,
+#             status=TenantBackup.BackupStatus.COMPLETED
+#         ).order_by('-created_at').first()
+        
+#         data = {
+#             'public_id': str(tenant.public_id),
+#             'name': tenant.name,
+#             'code': tenant.code,
+#             'domain': tenant.domain,
+#             'subscription_status': tenant.subscription_status,
+#             'subscription_plan': tenant.subscription_plan.id if tenant.subscription_plan else None,
+#             'user_count': user_count,
+#             'patient_count': patient_count,
+#             'department_count': department_count,
+#             'active_modules_count': active_modules_count,
+#             'storage_used_mb': 0,  # Will be calculated from storage
+#             'last_backup_time': last_backup.created_at if last_backup else None,
+#         }
+        
+#         serializer = TenantSummarySerializer(data=data)
+#         serializer.is_valid()
+#         return Response(serializer.data)
+    
+#     @action(detail=False, methods=['get'])
+#     def statistics(self, request):
+#         """Get global tenant statistics."""
+#         total_tenants = Tenant.objects.count()
+#         active_tenants = Tenant.objects.filter(
+#             subscription_status=Tenant.SubscriptionStatus.ACTIVE,
+#             is_active=True
+#         ).count()
+#         trial_tenants = Tenant.objects.filter(
+#             subscription_status=Tenant.SubscriptionStatus.TRIAL
+#         ).count()
+#         suspended_tenants = Tenant.objects.filter(
+#             subscription_status=Tenant.SubscriptionStatus.SUSPENDED
+#         ).count()
+        
+#         # Monthly revenue projection
+#         active_tenants_revenue = Tenant.objects.filter(
+#             subscription_status=Tenant.SubscriptionStatus.ACTIVE
+#         ).aggregate(total=Sum('monthly_fee'))['total'] or 0
+        
+#         # Tenants by facility type
+#         tenants_by_type = Tenant.objects.values(
+#             'facility_type__name'
+#         ).annotate(
+#             count=Count('id')
+#         ).order_by('-count')
+        
+#         # Tenants by state
+#         tenants_by_state = Tenant.objects.values(
+#             'state__name'
+#         ).annotate(
+#             count=Count('id')
+#         ).order_by('-count')
+        
+#         return Response({
+#             'total_tenants': total_tenants,
+#             'active_tenants': active_tenants,
+#             'trial_tenants': trial_tenants,
+#             'suspended_tenants': suspended_tenants,
+#             'monthly_revenue': float(active_tenants_revenue),
+#             'tenants_by_facility_type': list(tenants_by_type),
+#             'tenants_by_state': list(tenants_by_state),
+#         })
 
 class TenantViewSet(viewsets.ModelViewSet):
     """ViewSet for managing tenants (global admin only)."""
@@ -324,9 +581,171 @@ class TenantViewSet(viewsets.ModelViewSet):
             'tenants_by_facility_type': list(tenants_by_type),
             'tenants_by_state': list(tenants_by_state),
         })
+    
+    @action(detail=True, methods=['get'], url_path='admins')
+    def get_admins(self, request, public_id=None):
+        """
+        Get all admin users for a specific tenant.
+        URL: /api/v1/tenants/<tenant_id>/admins/
+        
+        Query params:
+        - search: Search by name, email, or username
+        - is_active: Filter by active status (true/false)
+        - page: Page number
+        - page_size: Items per page
+        """
+        tenant = self.get_object()
+        
+        # Base queryset - get all admin users for this tenant
+        admin_users = TenantUser.objects.filter(
+            tenant=tenant,
+            role='admin'
+        ).select_related('tenant', 'department', 'state')
+        
+        # Filter by search term
+        search = request.query_params.get('search')
+        if search:
+            admin_users = admin_users.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(username__icontains=search) |
+                Q(employee_id__icontains=search)
+            )
+        
+        # Filter by active status
+        is_active = request.query_params.get('is_active')
+        if is_active is not None:
+            if is_active.lower() == 'true':
+                admin_users = admin_users.filter(is_active=True)
+            elif is_active.lower() == 'false':
+                admin_users = admin_users.filter(is_active=False)
+        
+        # Order by name
+        admin_users = admin_users.order_by('first_name', 'last_name')
+        
+        # Pagination
+        paginator = StandardPagination()
+        paginated_admins = paginator.paginate_queryset(admin_users, request)
+        
+        # Serialize
+        serializer = TenantUserSerializer(paginated_admins, many=True)
+        
+        # Return paginated response with tenant info
+        response = paginator.get_paginated_response(serializer.data)
+        
+        # Add tenant info to the response
+        response.data['tenant'] = {
+            'public_id': str(tenant.public_id),
+            'name': tenant.name,
+            'code': tenant.code,
+            'domain': tenant.domain,
+            'subscription_status': tenant.subscription_status
+        }
+        
+        return response
 
+# @api_view(['POST'])
+# @permission_classes([IsAuthenticated, IsSystemAdmin])
+# def create_tenant_admin(request, tenant_id):
+#     try:
+#         tenant = Tenant.objects.get(public_id=tenant_id)
+#     except Tenant.DoesNotExist:
+#         return Response(
+#             {'error': 'Tenant not found.'},
+#             status=status.HTTP_404_NOT_FOUND,
+#         )
 
+#     # Fix: Parse data if it's a string (when Content-Type header is missing)
+#     data = request.data
+#     if isinstance(data, str):
+#         try:
+#             import json
+#             data = json.loads(data)
+#         except json.JSONDecodeError:
+#             return Response(
+#                 {'error': 'Invalid JSON data. Please check your request body.'},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+    
+#     email = data.get('email')
+#     password = data.get('password')
+#     first_name = (data.get('first_name') or '').strip()
+#     last_name = (data.get('last_name') or '').strip()
 
+#     if not email or not password or not first_name or not last_name:
+#         return Response(
+#             {
+#                 'error': 'email, password, first_name, and last_name are required.'
+#             },
+#             status=status.HTTP_400_BAD_REQUEST,
+#         )
+
+#     try:
+#         validate_email(email)
+#     except Exception:
+#         return Response(
+#             {'error': 'Invalid email format.'},
+#             status=status.HTTP_400_BAD_REQUEST,
+#         )
+
+#     try:
+#         validate_password(password)
+#     except Exception as exc:
+#         return Response(
+#             {'error': exc.messages},
+#             status=status.HTTP_400_BAD_REQUEST,
+#         )
+
+#     supplied_username = (data.get('username') or '').strip()
+#     if supplied_username:
+#         username = supplied_username
+#     else:
+#         base_username = f"{first_name.lower()}.{last_name.lower()}".replace(' ', '_')
+#         username = base_username
+
+#     counter = 1
+#     original_username = username
+#     while TenantUser.objects.filter(tenant=tenant, username=username).exists():
+#         username = f"{original_username}{counter}"
+#         counter += 1
+
+#     try:
+#         admin_user = TenantUser.objects.create(
+#             tenant=tenant,
+#             username=username,
+#             email=email,
+#             first_name=first_name,
+#             last_name=last_name,
+#             phone=data.get('phone', ''),
+#             role='admin',
+#             employee_id=data.get('employee_id') or data.get('user_id') or None,
+#             is_staff=True,
+#             is_active=True
+#         )
+#     except IntegrityError:
+#         return Response(
+#             {'error': f'A user with email ({email}) already exists. Please use a different email address.'},
+#             status=status.HTTP_400_BAD_REQUEST,
+#         )
+#     admin_user.set_password(password)
+#     admin_user.save()
+#     admin_user.refresh_from_db()
+
+#     return Response(
+#         {
+#             'message': 'Tenant admin created successfully',
+#             'user': {
+#                 'id': admin_user.id,
+#                 'user_id': admin_user.employee_id,
+#                 'username': admin_user.username,
+#                 'email': admin_user.email,
+#                 'tenant_public_id': str(tenant.public_id),
+#                 'tenant_name': tenant.name,
+#             },
+#         },
+#         status=status.HTTP_201_CREATED,
+#     )
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, IsSystemAdmin])
@@ -339,7 +758,18 @@ def create_tenant_admin(request, tenant_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    # Parse data
     data = request.data
+    if isinstance(data, str):
+        try:
+            import json
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            return Response(
+                {'error': 'Invalid JSON data.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
     email = data.get('email')
     password = data.get('password')
     first_name = (data.get('first_name') or '').strip()
@@ -353,6 +783,7 @@ def create_tenant_admin(request, tenant_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Email validation
     try:
         validate_email(email)
     except Exception:
@@ -361,6 +792,7 @@ def create_tenant_admin(request, tenant_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Password validation
     try:
         validate_password(password)
     except Exception as exc:
@@ -369,6 +801,7 @@ def create_tenant_admin(request, tenant_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Username generation
     supplied_username = (data.get('username') or '').strip()
     if supplied_username:
         username = supplied_username
@@ -382,6 +815,34 @@ def create_tenant_admin(request, tenant_id):
         username = f"{original_username}{counter}"
         counter += 1
 
+    # Employee ID handling
+    employee_id = data.get('employee_id') or data.get('user_id') or None
+    
+    # Check if employee_id exists (if provided)
+    if employee_id and TenantUser.objects.filter(tenant=tenant, employee_id=employee_id).exists():
+        return Response(
+            {
+                'error': 'Employee ID already exists.',
+                'code': 'DUPLICATE_EMPLOYEE_ID',
+                'details': f'The employee ID "{employee_id}" is already assigned to another user.',
+                'suggestion': 'Please use a different employee ID or leave it blank.'
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Check if email exists
+    if TenantUser.objects.filter(tenant=tenant, email=email).exists():
+        return Response(
+            {
+                'error': 'Email already exists.',
+                'code': 'DUPLICATE_EMAIL',
+                'details': f'A user with email "{email}" already exists.',
+                'suggestion': 'Please use a different email address.'
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Create user
     try:
         admin_user = TenantUser.objects.create(
             tenant=tenant,
@@ -391,15 +852,53 @@ def create_tenant_admin(request, tenant_id):
             last_name=last_name,
             phone=data.get('phone', ''),
             role='admin',
-            employee_id=data.get('employee_id') or None,
+            employee_id=employee_id,
             is_staff=True,
             is_active=True
         )
-    except IntegrityError:
-        return Response(
-            {'error': f'A user with email ({email}) already exists. Please use a different email address.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    except IntegrityError as e:
+        error_msg = str(e)
+        
+        if 'employee_id' in error_msg.lower():
+            return Response(
+                {
+                    'error': 'Employee ID already exists.',
+                    'code': 'DUPLICATE_EMPLOYEE_ID',
+                    'details': f'The employee ID "{employee_id}" is already in use.',
+                    'suggestion': 'Please use a different employee ID.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif 'email' in error_msg.lower():
+            return Response(
+                {
+                    'error': 'Email already exists.',
+                    'code': 'DUPLICATE_EMAIL',
+                    'details': f'Email "{email}" is already registered.',
+                    'suggestion': 'Please use a different email.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif 'username' in error_msg.lower():
+            return Response(
+                {
+                    'error': 'Username already exists.',
+                    'code': 'DUPLICATE_USERNAME',
+                    'details': f'Username "{username}" is already taken.',
+                    'suggestion': 'Please use a different username.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        else:
+            return Response(
+                {
+                    'error': 'Database integrity error.',
+                    'code': 'INTEGRITY_ERROR',
+                    'details': error_msg
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
     admin_user.set_password(password)
     admin_user.save()
     admin_user.refresh_from_db()
@@ -421,6 +920,38 @@ def create_tenant_admin(request, tenant_id):
 
 
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsSystemAdmin])
+def get_tenant_admins(request, tenant_id):
+    """
+    Get all admin users for a specific tenant.
+    URL: /api/v1/tenants/tenants/<tenant_id>/admins/
+    """
+    try:
+        tenant = Tenant.objects.get(public_id=tenant_id)
+    except Tenant.DoesNotExist:
+        return Response(
+            {'error': 'Tenant not found.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    
+    # Get all admin users for this tenant
+    admin_users = TenantUser.objects.filter(
+        tenant=tenant,
+        role='admin'
+    ).select_related('tenant', 'department')
+    
+    # Pagination (optional)
+    paginator = StandardPagination()
+    paginated_admins = paginator.paginate_queryset(admin_users, request)
+    
+    # Serialize the data
+    serializer = TenantUserSerializer(paginated_admins, many=True)
+    
+    return paginator.get_paginated_response(serializer.data)
+
+    
 class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     """ViewSet for managing subscription plans."""
     queryset = SubscriptionPlan.objects.all()
