@@ -150,14 +150,30 @@ class AppointmentSerializer(serializers.ModelSerializer):
     doctor_name = serializers.CharField(source='doctor.get_full_name', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)
     is_past_due = serializers.SerializerMethodField()
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    updated_by_name = serializers.CharField(source='updated_by.get_full_name', read_only=True)
+    patient_phone = serializers.CharField(source='patient.phone', read_only=True)
+    patient_email = serializers.CharField(source='patient.email', read_only=True)
     
     class Meta:
         model = Appointment
         fields = '__all__'
-        read_only_fields = ['appointment_number']
+        read_only_fields = ['appointment_number', 'tenant']
     
     def get_is_past_due(self, obj):
         return obj.is_past_due()
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['updated_by'] = request.user
+        return super().update(instance, validated_data)
 
 
 class PatientSearchSerializer(serializers.Serializer):

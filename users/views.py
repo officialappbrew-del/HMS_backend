@@ -1167,7 +1167,7 @@ class BackupCodeView(APIView):
                 {'error': '2FA not set up'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-    
+
     def post(self, request):
         """Generate new backup codes."""
         count = request.data.get('count', 10)
@@ -1194,3 +1194,62 @@ class BackupCodeView(APIView):
                 {'error': '2FA not set up'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+from rest_framework_simplejwt.tokens import RefreshToken
+
+
+class TenantAwareTokenRefreshSerializer(TokenRefreshSerializer):
+    """Token refresh serializer that also looks up TenantUser when GlobalUser is not found."""
+
+    def validate(self, attrs):
+        refresh_token = attrs.get('refresh')
+
+        if refresh_token is None:
+            raise TokenError('Refresh token is required')
+
+        try:
+            refresh = RefreshToken(refresh_token)
+        except TokenError as exc:
+            raise InvalidToken(str(exc))
+
+        user_id = refresh.get('user_id')
+        is_tenant_user = refresh.get('is_tenant_user', False)
+
+        user = None
+        if is_tenant_user:
+            try:
+                user = TenantUser.objects.get(id=user_id)
+            except TenantUser.DoesNotExist:
+                pass
+
+        if user is None:
+            try:
+                user = GlobalUser.objects.get(id=user_id)
+            except GlobalUser.DoesNotExist:
+                raise InvalidToken('User not found')
+
+        if not user.is_active:
+            raise InvalidToken('User account is disabled')
+
+        access = refresh.access_token
+        access['is_tenant_user'] = is_tenant_user
+        access['user_type'] = 'tenant' if is_tenant_user else 'global'
+        access['role'] = getattr(user, 'role', '')
+        if is_tenant_user:
+            access['full_name'] = user.get_full_name()
+            access['username'] = user.username
+
+        return {
+            'access': str(access),
+            'refresh': str(refresh),
+        }
+
+
+@api_view(['post'])
+def tenant_aware_token_refresh(request):
+    serializer = TenantAwareTokenRefreshSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return Response(serializer.validated_data)

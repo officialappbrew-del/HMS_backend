@@ -6,6 +6,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.text import slugify
 
 from .models import (
     Patient, PatientVisit, PatientDocument,
@@ -257,7 +258,6 @@ class PatientViewSet(viewsets.ModelViewSet):
         visit = PatientVisit.objects.create(
             tenant=user.tenant_user.tenant,
             patient=patient,
-            registered_by=user.tenant_user,
             visit_type=request.data.get('visit_type', 'opd'),
             chief_complaint=request.data.get('chief_complaint', ''),
             triage_category=request.data.get('triage_category', 'green')
@@ -356,22 +356,152 @@ class PatientVisitViewSet(viewsets.ModelViewSet):
             raise permissions.PermissionDenied("Only doctors can end consultations")
         
         # End consultation
+        visit.chief_complaint = request.data.get('chief_complaint', visit.chief_complaint)
+        visit.history_of_present_illness = request.data.get('history_of_present_illness', visit.history_of_present_illness)
+        visit.referral_from = request.data.get('referral_from', visit.referral_from)
+        visit.referral_reason = request.data.get('referral_reason', visit.referral_reason)
         visit.consultation_end_time = timezone.now()
-        visit.visit_status = 'awaiting_lab'
+        visit.visit_status = request.data.get('next_status', 'awaiting_lab')
         visit.save()
-        
-        # Add consultation notes
-        from clinical.models import ConsultationNote
-        ConsultationNote.objects.create(
-            tenant=visit.tenant,
+
+        # Add or update consultation notes
+        from clinical.models import ConsultationNote, Prescription
+        consultation_note, created = ConsultationNote.objects.update_or_create(
             visit=visit,
-            doctor=user.tenant_user,
-            subjective=request.data.get('subjective', ''),
-            objective=request.data.get('objective', ''),
-            assessment=request.data.get('assessment', ''),
-            plan=request.data.get('plan', '')
+            defaults={
+                'tenant': visit.tenant,
+                'patient': visit.patient,
+                'doctor': user.tenant_user,
+                'subjective': request.data.get('subjective', ''),
+                'objective': request.data.get('objective', ''),
+                'assessment': request.data.get('assessment', ''),
+                'plan': request.data.get('plan', ''),
+                'diagnosis_codes': request.data.get('diagnosis_codes', []),
+                'differential_diagnosis': request.data.get('differential_diagnosis', ''),
+                'is_final': request.data.get('is_final', True)
+            }
         )
-        
+
+        # Create any prescriptions from submitted payload
+        prescriptions = request.data.get('prescriptions', [])
+        for prescription_data in prescriptions:
+            Prescription.objects.create(
+                tenant=visit.tenant,
+                visit=visit,
+                patient=visit.patient,
+                prescribed_by=user.tenant_user,
+                drug_name=prescription_data.get('drug_name', prescription_data.get('medication', '')),
+                dosage=prescription_data.get('dosage', prescription_data.get('dose', '')),
+                frequency=prescription_data.get('frequency', ''),
+                duration=prescription_data.get('duration', 0) or 0,
+                route=prescription_data.get('route', 'oral'),
+                instructions=prescription_data.get('instructions', ''),
+                special_instructions=prescription_data.get('special_instructions', ''),
+                status=prescription_data.get('status', 'prescribed')
+            )
+
+        # Persist laboratory orders requested during consultation
+        lab_orders = request.data.get('lab_orders', [])
+        if lab_orders:
+            from lab.models import LabOrder, LabTest
+            for order_index, order_data in enumerate(lab_orders, start=1):
+                test = None
+                test_id = order_data.get('test_id')
+                test_name = order_data.get('test_name') or order_data.get('test') or ''
+                if test_id:
+                    test = LabTest.objects.filter(id=test_id, tenant=visit.tenant).first()
+                if not test and test_name:
+                    test = LabTest.objects.filter(tenant=visit.tenant).filter(
+                        Q(name__iexact=test_name) | Q(code__iexact=test_name)
+                    ).first()
+                if not test:
+                    code = slugify(test_name or f'lab_test_{order_index}')[:45] or f'LAB-{visit.id}-{order_index}'
+                    if LabTest.objects.filter(tenant=visit.tenant, code=code).exists():
+                        test = LabTest.objects.filter(tenant=visit.tenant, code=code).first()
+                    else:
+                        test = LabTest.objects.create(
+                            tenant=visit.tenant,
+                            name=test_name or f'Lab order {order_index}',
+                            code=code,
+                            category='other',
+                            sample_type='Blood',
+                            turnaround_time=24,
+                            price=0
+                        )
+
+                LabOrder.objects.create(
+                    tenant=visit.tenant,
+                    patient=visit.patient,
+                    visit=visit,
+                    order_number=f"LO-{timezone.now().strftime('%Y%m%d%H%M%S%f')}-{visit.id}-{order_index}",
+                    test=test,
+                    clinical_notes=order_data.get('clinical_notes', ''),
+                    status=order_data.get('status', 'ordered'),
+                    priority=order_data.get('priority', 'routine'),
+                    ordered_by=user.tenant_user
+                )
+
+        # Persist radiology, procedure, and referral requests as patient documents
+        radiology_orders = request.data.get('radiology_orders', [])
+        procedure_orders = request.data.get('procedure_orders', [])
+        referral_orders = request.data.get('referral_orders', [])
+        if radiology_orders or procedure_orders or referral_orders:
+            for index, order_data in enumerate(radiology_orders, start=1):
+                PatientDocument.objects.create(
+                    tenant=visit.tenant,
+                    patient=visit.patient,
+                    document_type='radiology',
+                    title=order_data.get('study', f'Radiology order {index}'),
+                    description=(f"Priority: {order_data.get('priority', 'routine')}\n" + order_data.get('notes', '')).strip(),
+                    uploaded_by=user.tenant_user,
+                    document_date=timezone.now().date()
+                )
+            for index, order_data in enumerate(procedure_orders, start=1):
+                PatientDocument.objects.create(
+                    tenant=visit.tenant,
+                    patient=visit.patient,
+                    document_type='other',
+                    title=f"Procedure: {order_data.get('procedure', 'Procedure order')}",
+                    description=(f"Priority: {order_data.get('priority', 'routine')}\n" + order_data.get('notes', '')).strip(),
+                    uploaded_by=user.tenant_user,
+                    document_date=timezone.now().date()
+                )
+            for index, order_data in enumerate(referral_orders, start=1):
+                PatientDocument.objects.create(
+                    tenant=visit.tenant,
+                    patient=visit.patient,
+                    document_type='referral',
+                    title=order_data.get('referral', f'Referral order {index}') ,
+                    description=(f"Priority: {order_data.get('priority', 'routine')}\n" + order_data.get('notes', '')).strip(),
+                    uploaded_by=user.tenant_user,
+                    document_date=timezone.now().date()
+                )
+
+        # Create billing invoice if billing items exist
+        billing_items = request.data.get('billing_items', [])
+        if billing_items:
+            from billing.models import Invoice
+            invoice_number = f"INV-{timezone.now().strftime('%Y%m%d%H%M%S')}-{visit.id}"
+            subtotal = sum([float(item.get('amount', 0) or 0) for item in billing_items])
+            invoice = Invoice.objects.create(
+                tenant=visit.tenant,
+                patient=visit.patient,
+                visit=visit,
+                invoice_number=invoice_number,
+                due_date=timezone.now() + timezone.timedelta(days=30),
+                subtotal=subtotal,
+                tax_amount=0,
+                discount_amount=0,
+                total_amount=subtotal,
+                amount_paid=0,
+                balance_due=subtotal,
+                status='issued',
+                insurance_covered=request.data.get('insurance_covered', False),
+                insurance_amount=request.data.get('insurance_amount', 0),
+                patient_amount=subtotal - float(request.data.get('insurance_amount', 0) or 0)
+            )
+            # A lightweight invoice item list may be added here if the model supports it.
+
         serializer = self.get_serializer(visit)
         return Response(serializer.data)
 
@@ -413,6 +543,15 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             return queryset.order_by('scheduled_date', 'scheduled_time')
         
         return Appointment.objects.none()
+    
+    def perform_create(self, serializer):
+        user = self.request.user
+        tenant = None
+        if hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+        if not tenant:
+            raise permissions.PermissionDenied("Tenant is required")
+        serializer.save(tenant=tenant)
     
     @action(detail=False, methods=['post'])
     def schedule(self, request):

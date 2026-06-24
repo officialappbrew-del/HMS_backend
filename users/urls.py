@@ -1,11 +1,11 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
     UserViewSet, AuthenticationView, TwoFAView,
     RSAKeyViewSet, UserSessionViewSet, SecurityEventViewSet,
-    UserNotificationViewSet, TwoFASetupView, BackupCodeView
+    UserNotificationViewSet, TwoFASetupView, BackupCodeView,
+    tenant_aware_token_refresh
 )
 
 router = DefaultRouter()
@@ -18,13 +18,12 @@ router.register(r'notifications', UserNotificationViewSet, basename='notificatio
 urlpatterns = [
     # Authentication endpoints
     path('login/', AuthenticationView.as_view(), name='login'),
-    # path('tenant-login/', TenantAuthenticationView.as_view(), name='tenant-login'),  # Add this
     path('verify-2fa/', TwoFAView.as_view(), name='verify-2fa'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', tenant_aware_token_refresh, name='token_refresh'),
     
     # 2FA setup endpoints
     path('two-factor/setup/', TwoFASetupView.as_view(), name='two-factor-setup'),
-    path('two-factor/backup-codes/', BackupCodeView.as_view(), name='backup-codes'),
+    path('two-factor/backup-codes/', BackupCodeView.as_view(), name='two-factor-backup-codes'),
     
     # API routes
     path('', include(router.urls)),

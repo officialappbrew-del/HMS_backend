@@ -55,7 +55,7 @@ class Prescription(BaseModel):
     drug_name = models.CharField(max_length=200)
     dosage = models.CharField(max_length=100)  # e.g., 500mg
     frequency = models.CharField(max_length=100)  # e.g., Twice daily
-    duration = models.IntegerField(help_text='Duration in days')
+    duration = models.CharField(max_length=100)
     route = models.CharField(max_length=50, choices=[
         ('oral', 'Oral'),
         ('iv', 'IV'),
