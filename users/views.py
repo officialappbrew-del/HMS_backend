@@ -1196,6 +1196,8 @@ class BackupCodeView(APIView):
             )
 
 
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -1249,6 +1251,7 @@ class TenantAwareTokenRefreshSerializer(TokenRefreshSerializer):
 
 
 @api_view(['post'])
+@permission_classes([AllowAny])
 def tenant_aware_token_refresh(request):
     serializer = TenantAwareTokenRefreshSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
