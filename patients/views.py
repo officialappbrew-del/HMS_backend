@@ -1,3 +1,6 @@
+import csv
+import time
+import threading
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
@@ -10,12 +13,14 @@ from django.utils.text import slugify
 
 from .models import (
     Patient, PatientVisit, PatientDocument,
-    PatientAllergy, PatientMedication, Appointment
+    PatientAllergy, PatientMedication, Appointment,
+    BulkPatientUpload
 )
 from .serializers import (
     PatientSerializer, PatientVisitSerializer, PatientDocumentSerializer,
     PatientAllergySerializer, PatientMedicationSerializer, AppointmentSerializer,
-    PatientSearchSerializer, AppointmentScheduleSerializer, PatientLoginSerializer
+    PatientSearchSerializer, AppointmentScheduleSerializer, PatientLoginSerializer,
+    BulkPatientUploadSerializer
 )
 from tenants.models import TenantUser
 from core.permissions import IsTenantAdmin, IsDoctor, IsNurse
@@ -647,3 +652,169 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             'appointment': AppointmentSerializer(appointment).data,
             'visit': PatientVisitSerializer(visit).data
         })
+
+
+class BulkPatientUploadViewSet(viewsets.ModelViewSet):
+    """ViewSet for tracking bulk patient uploads."""
+    serializer_class = BulkPatientUploadSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        tenant = None
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        elif hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+        if tenant:
+            return BulkPatientUpload.objects.filter(tenant=tenant)
+        return BulkPatientUpload.objects.none()
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        tenant = None
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        elif hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+        if not tenant:
+            raise serializers.ValidationError({'tenant': 'No tenant associated with your account.'})
+        serializer.save(tenant=tenant, uploaded_by=user.tenant_user if hasattr(user, 'tenant_user') else None, status='pending')
+
+    @action(detail=False, methods=['post'], serializer_class=BulkPatientUploadSerializer)
+    def upload(self, request):
+        """Accept file upload and start background processing."""
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return Response({'error': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        tenant = None
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        elif hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+        if not tenant:
+            return Response({'error': 'No tenant associated with your account.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        upload = BulkPatientUpload.objects.create(
+            tenant=tenant,
+            uploaded_by=user.tenant_user if hasattr(user, 'tenant_user') else None,
+            file=file_obj,
+            original_filename=file_obj.name,
+            status='processing',
+            started_at=timezone.now(),
+        )
+
+        thread = threading.Thread(target=_process_bulk_upload, args=(upload.id,))
+        thread.start()
+
+        serializer = self.get_serializer(upload)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+def _process_bulk_upload(upload_id):
+    """Background processor for bulk patient uploads."""
+    from django.db import transaction, close_old_connections
+    close_old_connections()
+    try:
+        upload = BulkPatientUpload.objects.get(id=upload_id)
+        upload.status = 'processing'
+        upload.started_at = timezone.now()
+        upload.save(update_fields=['status', 'started_at'])
+
+        file_path = upload.file.path
+        errors = []
+        success_count = 0
+        failure_count = 0
+        total_records = 0
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                total_records = len(rows)
+                upload.total_records = total_records
+                upload.save(update_fields=['total_records'])
+
+                for idx, row in enumerate(rows):
+                    try:
+                        dof = row.get('date_of_birth') or row.get('Date of Birth') or ''
+                        dob = None
+                        if dof:
+                            try:
+                                from datetime import datetime
+                                dob = datetime.strptime(dof.strip(), '%Y-%m-%d').date()
+                            except Exception:
+                                try:
+                                    dob = datetime.strptime(dof.strip(), '%d/%m/%Y').date()
+                                except Exception:
+                                    try:
+                                        dob = datetime.strptime(dof.strip(), '%m/%d/%Y').date()
+                                    except Exception:
+                                        raise ValueError(f'Invalid date format for date_of_birth: {dof}')
+
+                        validated_data = {
+                            'first_name': (row.get('first_name') or row.get('First Name') or '').strip(),
+                            'last_name': (row.get('last_name') or row.get('Last Name') or '').strip(),
+                            'date_of_birth': dob,
+                            'gender': (row.get('gender') or row.get('Gender') or 'unknown').lower(),
+                            'marital_status': (row.get('marital_status') or row.get('Marital Status') or 'single').lower(),
+                            'phone': (row.get('phone') or row.get('Phone') or '').strip(),
+                            'phone2': (row.get('phone2') or row.get('Phone 2') or '').strip(),
+                            'email': (row.get('email') or row.get('Email') or '').strip(),
+                            'address': (row.get('address') or row.get('Address') or '').strip(),
+                            'city': (row.get('city') or row.get('City') or '').strip(),
+                            'state': (row.get('state') or row.get('State') or 'Rivers').strip(),
+                            'lga': (row.get('lga') or row.get('LGA') or '').strip(),
+                            'country': (row.get('country') or row.get('Country') or 'Nigeria').strip(),
+                            'blood_group': (row.get('blood_group') or row.get('Blood Group') or 'unknown').strip(),
+                            'genotype': (row.get('genotype') or row.get('Genotype') or 'unknown').strip(),
+                            'next_of_kin_name': (row.get('next_of_kin_name') or row.get('Next of Kin Name') or '').strip(),
+                            'next_of_kin_phone': (row.get('next_of_kin_phone') or row.get('Next of Kin Phone') or '').strip(),
+                            'next_of_kin_address': (row.get('next_of_kin_address') or row.get('Next of Kin Address') or '').strip(),
+                        }
+
+                        if not validated_data['first_name'] or not validated_data['last_name']:
+                            raise ValueError('First name and last name are required.')
+
+                        if not validated_data['phone']:
+                            raise ValueError('Phone number is required.')
+
+                        if not validated_data['date_of_birth']:
+                            raise ValueError('Date of birth is required.')
+
+                        with transaction.atomic(using='default'):
+                            Patient.objects.create(tenant=upload.tenant, **validated_data)
+                        success_count += 1
+                    except Exception as row_err:
+                        failure_count += 1
+                        errors.append({
+                            'row': idx + 2,
+                            'data': dict(row),
+                            'error': f"{type(row_err).__name__}: {str(row_err)}"
+                        })
+
+                    upload.processed_records = idx + 1
+                    upload.success_count = success_count
+                    upload.failure_count = failure_count
+                    upload.errors = errors
+                    try:
+                        upload.save(update_fields=['processed_records', 'success_count', 'failure_count', 'errors'])
+                    except Exception:
+                        pass
+
+            upload.status = 'completed'
+            upload.completed_at = timezone.now()
+            upload.result_message = f"Processed {total_records} records. {success_count} succeeded, {failure_count} failed."
+            upload.save(update_fields=['status', 'completed_at', 'result_message'])
+
+        except Exception as e:
+            import traceback
+            upload.status = 'failed'
+            upload.completed_at = timezone.now()
+            upload.result_message = str(e)
+            upload.save(update_fields=['status', 'completed_at', 'result_message'])
+
+    except BulkPatientUpload.DoesNotExist:
+        pass

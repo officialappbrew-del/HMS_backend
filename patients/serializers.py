@@ -3,7 +3,8 @@ from django.utils import timezone
 
 from .models import (
     Patient, PatientVisit, PatientDocument,
-    PatientAllergy, PatientMedication, Appointment
+    PatientAllergy, PatientMedication, Appointment,
+    BulkPatientUpload
 )
 
 
@@ -197,3 +198,18 @@ class AppointmentScheduleSerializer(serializers.Serializer):
     scheduled_time = serializers.TimeField()
     reason = serializers.CharField(required=False)
     notes = serializers.CharField(required=False)
+
+
+class BulkPatientUploadSerializer(serializers.ModelSerializer):
+    """Serializer for bulk patient upload records."""
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
+
+    class Meta:
+        model = BulkPatientUpload
+        fields = '__all__'
+        read_only_fields = [
+            'tenant', 'uploaded_by', 'file', 'original_filename',
+            'status', 'total_records', 'processed_records',
+            'success_count', 'failure_count', 'errors',
+            'result_message', 'started_at', 'completed_at'
+        ]

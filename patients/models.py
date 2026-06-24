@@ -522,3 +522,33 @@ class Appointment(BaseModel):
             timezone.datetime.combine(self.scheduled_date, self.scheduled_time)
         )
         return timezone.now() > appointment_datetime and self.status == 'scheduled'
+
+
+class BulkPatientUpload(BaseModel):
+    """Track bulk patient uploads processed in background."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='bulk_uploads')
+    uploaded_by = models.ForeignKey('tenants.TenantUser', on_delete=models.SET_NULL, null=True, related_name='bulk_uploads')
+    file = models.FileField(upload_to='bulk_uploads/')
+    original_filename = models.CharField(max_length=255)
+    status = models.CharField(max_length=20, choices=[
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ], default='pending')
+    total_records = models.IntegerField(default=0)
+    processed_records = models.IntegerField(default=0)
+    success_count = models.IntegerField(default=0)
+    failure_count = models.IntegerField(default=0)
+    errors = models.JSONField(blank=True, null=True, help_text='List of row-level errors')
+    result_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _('Bulk Patient Upload')
+        verbose_name_plural = _('Bulk Patient Uploads')
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Bulk upload {self.id} - {self.original_filename}"
