@@ -361,10 +361,12 @@ LOG_DIR.mkdir(exist_ok=True)
 # Ensure media directory exists
 MEDIA_ROOT.mkdir(exist_ok=True)
 
+# Storage backend configuration (Supabase, S3, or local)
+from .storage import *  # noqa: E402,F403
+
+
+
 # Multi-tenancy settings
-
-
-
 TENANT_MODEL = "tenants.Tenant"
 TENANT_DOMAIN_MODEL = "tenants.TenantDomain"  # <-- fix here
 PUBLIC_SCHEMA_NAME = 'public'

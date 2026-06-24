@@ -39,6 +39,8 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         '/swagger/',
         '/redoc/',
         '/test-public/',
+        '/media/',
+        '/static/',
     ]
     
     def process_request(self, request):

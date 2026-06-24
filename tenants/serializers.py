@@ -165,6 +165,11 @@ class TenantUserSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         if data.get('specialization') == 'None':
             data['specialization'] = ''
+        profile_picture = data.get('profile_picture')
+        if profile_picture and not profile_picture.startswith('http'):
+            request = self.context.get('request')
+            if request:
+                data['profile_picture'] = request.build_absolute_uri(profile_picture)
         return data
 
     def _resolve_tenant(self):

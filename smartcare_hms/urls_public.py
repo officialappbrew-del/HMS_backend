@@ -4,6 +4,8 @@ This module is used by django-tenants for the public schema URLs.
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import permissions
@@ -28,3 +30,8 @@ urlpatterns = [
     path('api/v1/lab/', include('lab.urls')),
     path('api/v1/billing/', include('billing.urls')),
 ]
+
+# Serve static and media files in development (public schema)
+if settings.DEBUG:
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

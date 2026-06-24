@@ -263,6 +263,7 @@ class TenantUser(BaseModel):
         ('female', 'Female'),
         ('other', 'Other')
     ], blank=True)
+    profile_picture = models.ImageField(upload_to='profile_pictures/', blank=True, null=True)
     
     # Contact Information
     phone = models.CharField(max_length=20)
