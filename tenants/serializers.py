@@ -14,7 +14,7 @@ from .models import (
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup
 )
-from core.models import State, LGA, FacilityType
+from core.models import State, LGA, FacilityType, Specialization
 from core.serializers import StateSerializer, LGASerializer, FacilityTypeSerializer
 
 
@@ -143,6 +143,7 @@ class TenantUserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
     employee_id = serializers.CharField(required=False, allow_blank=True)
     phone = serializers.CharField(required=False, allow_blank=True)
+    specialization = serializers.CharField(required=False, allow_blank=True)
     
     class Meta:
         model = TenantUser
@@ -159,6 +160,12 @@ class TenantUserSerializer(serializers.ModelSerializer):
     
     def get_full_name(self, obj):
         return obj.get_full_name()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if data.get('specialization') == 'None':
+            data['specialization'] = ''
+        return data
 
     def _resolve_tenant(self):
         tenant = self.context.get('tenant')
@@ -242,10 +249,12 @@ class TenantUserSerializer(serializers.ModelSerializer):
         except:
             raise serializers.ValidationError("Invalid email format")
         
-        # Check uniqueness within tenant
         tenant = self._resolve_tenant()
         if tenant:
-            if TenantUser.objects.filter(tenant=tenant, email=value).exists():
+            qs = TenantUser.objects.filter(tenant=tenant, email=value)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
                 raise serializers.ValidationError("Email already exists in this tenant")
         
         return value.lower()
@@ -302,8 +311,19 @@ class TenantUserSerializer(serializers.ModelSerializer):
         return user
     
     def update(self, instance, validated_data):
-        # Handle password update
         password = validated_data.pop('password', None)
+        specialization_name = validated_data.pop('specialization', None)
+        
+        if specialization_name is not None:
+            if specialization_name == '':
+                instance.specialization = None
+            else:
+                try:
+                    instance.specialization = Specialization.objects.get(name=specialization_name)
+                except Specialization.DoesNotExist:
+                    raise serializers.ValidationError({
+                        'specialization': f'Specialization "{specialization_name}" not found.'
+                    })
         
         for attr, value in validated_data.items():
             setattr(instance, attr, value)

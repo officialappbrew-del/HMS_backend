@@ -1024,6 +1024,15 @@ class TenantUserViewSet(viewsets.ModelViewSet):
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
     
+    def _get_request_tenant_user(self):
+        """Resolve the TenantUser instance associated with the current request."""
+        user = self.request.user
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            return user.tenant_user
+        if isinstance(user, TenantUser):
+            return user
+        return None
+    
     def get_queryset(self):
         user = self.request.user
 
@@ -1107,6 +1116,55 @@ class TenantUserViewSet(viewsets.ModelViewSet):
         else:
             permission_classes = [permissions.IsAuthenticated]
         return [permission() for permission in permission_classes]
+    
+    def _can_edit_user(self, request_user, target_user):
+        """Check if request_user can edit target_user."""
+        if not request_user:
+            return False
+        tenant_user = self._get_request_tenant_user()
+        if not tenant_user:
+            return False
+        if tenant_user.role in ['admin', 'hr_manager']:
+            return True
+        return tenant_user.id == target_user.id
+    
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if not self._can_edit_user(request.user, instance):
+            return Response(
+                {'error': 'You can only edit your own profile.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().update(request, *args, **kwargs)
+    
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if not self._can_edit_user(request.user, instance):
+            return Response(
+                {'error': 'You can only edit your own profile.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().partial_update(request, *args, **kwargs)
+    
+    @action(detail=False, methods=['get', 'put', 'patch'])
+    def me(self, request):
+        """Get or update the current authenticated tenant user's own profile."""
+        tenant_user = self._get_request_tenant_user()
+        if not tenant_user:
+            return Response(
+                {'error': 'Tenant user profile not found.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if request.method == 'GET':
+            serializer = self.get_serializer(tenant_user)
+            return Response(serializer.data)
+        
+        partial = request.method == 'PATCH'
+        serializer = self.get_serializer(tenant_user, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
     
     def perform_create(self, serializer):
         user = self.request.user
