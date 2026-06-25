@@ -80,6 +80,11 @@ class Dispense(BaseModel):
     # Instructions
     instructions = models.TextField(blank=True)
     
+    def save(self, *args, **kwargs):
+        if self.unit_price is not None and self.quantity is not None:
+            self.total_price = self.unit_price * self.quantity
+        super().save(*args, **kwargs)
+    
     def __str__(self):
         return f"Dispense #{self.id} - {self.drug.name} to {self.patient.get_full_name()}"
     

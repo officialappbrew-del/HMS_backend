@@ -16,3 +16,13 @@ class DispenseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dispense
         fields = '__all__'
+        read_only_fields = ['total_price', 'dispensed_date', 'dispensed_by']
+
+    def validate(self, attrs):
+        if attrs.get('unit_price') is not None and attrs.get('quantity') is not None:
+            expected_total = attrs['unit_price'] * attrs['quantity']
+            if attrs.get('total_price') and abs(attrs['total_price'] - expected_total) > 0.01:
+                raise serializers.ValidationError({
+                    'total_price': f'Total price must equal unit_price × quantity ({expected_total}).'
+                })
+        return attrs

@@ -43,6 +43,16 @@ class IsPharmacist(permissions.BasePermission):
         return request.user.is_authenticated and request.user.role == 'pharmacist'
 
 
+class IsPharmacistOrTenantAdmin(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and (
+            request.user.role == 'pharmacist' or
+            request.user.role == 'tenant_admin' or
+            request.user.is_staff or
+            request.user.is_superuser
+        )
+
+
 class IsLabTechnician(permissions.BasePermission):
     """Check if user is a lab technician."""
     
