@@ -550,7 +550,13 @@ class AuthenticationView(APIView):
                     'user_id': user.employee_id or user.username,
                     'username': user.username,
                     'email': user.email,
-                    'role': user.role
+                    'role': user.role,
+                    'is_active': user.is_active,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'full_name': user.get_full_name(),
+                    'license_number': user.license_number,
+                    'mdcn_number': user.mdcn_number,
                 },
                 'tokens': {
                     'access_token': str(refresh.access_token),
@@ -606,7 +612,6 @@ class AuthenticationView(APIView):
                     refresh['tenant_public_id'] = str(tenant.public_id)
                     refresh['tenant_domain'] = tenant.domain
                     refresh['is_tenant_user'] = True
-                    refresh['user_type'] = 'tenant'
 
                     connection.set_schema('public')
                     return Response({
@@ -623,6 +628,11 @@ class AuthenticationView(APIView):
                             'email': user.email,
                             'role': user.role,
                             'is_active': user.is_active,
+                            'first_name': user.first_name,
+                            'last_name': user.last_name,
+                            'full_name': user.get_full_name(),
+                            'license_number': user.license_number,
+                            'mdcn_number': user.mdcn_number,
                         },
                         'tokens': {
                             'access_token': str(refresh.access_token),
