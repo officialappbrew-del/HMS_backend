@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ConsultationNote, Prescription, VitalSign
+from .models import ConsultationNote, Prescription, VitalSign, EarlyWarningScore, VitalSignAlert
 
 
 class ConsultationNoteSerializer(serializers.ModelSerializer):
@@ -46,3 +46,25 @@ class VitalSignSerializer(serializers.ModelSerializer):
     
     def get_blood_pressure_category(self, obj):
         return obj.get_blood_pressure_category()
+
+
+class EarlyWarningScoreSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
+    calculated_by_name = serializers.CharField(source='calculated_by.get_full_name', read_only=True)
+    visit_number = serializers.CharField(source='visit.visit_number', read_only=True)
+    
+    class Meta:
+        model = EarlyWarningScore
+        fields = '__all__'
+        read_only_fields = ['calculated_at']
+
+
+class VitalSignAlertSerializer(serializers.ModelSerializer):
+    patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
+    acknowledged_by_name = serializers.CharField(source='acknowledged_by.get_full_name', read_only=True)
+    resolved_by_name = serializers.CharField(source='resolved_by.get_full_name', read_only=True)
+    
+    class Meta:
+        model = VitalSignAlert
+        fields = '__all__'
+        read_only_fields = ['created_at']

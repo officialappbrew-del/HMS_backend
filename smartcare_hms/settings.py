@@ -45,6 +45,10 @@ INSTALLED_APPS = [
     'pharmacy',
     'lab',
     'billing',
+    'emr',
+    'cds',
+    'audit',
+    'ward_rounds',
 ]
 
 MIDDLEWARE = [
