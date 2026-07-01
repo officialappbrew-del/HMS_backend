@@ -28,6 +28,7 @@ from .serializers import (
 )
 from core.permissions import IsSystemAdmin
 from core.models import AuditLog
+from users.serializers import PasswordChangeSerializer
 
 
 from rest_framework.decorators import api_view, permission_classes
@@ -1109,6 +1110,43 @@ class TenantUserViewSet(viewsets.ModelViewSet):
 
         return context
     
+    @action(detail=False, methods=['post'])
+    def change_password(self, request):
+        """Change current tenant user's password."""
+        serializer = PasswordChangeSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            user = request.user
+            user.set_password(serializer.validated_data['new_password'])
+            user.password_changed_at = timezone.now()
+            user.save()
+            
+            from users.models import SecurityEvent
+            SecurityEvent.objects.create(
+                user=None,
+                event_type='password_change',
+                severity='INFO',
+                description='Password changed successfully',
+                ip_address=self.get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            
+            return Response({'detail': 'Password changed successfully'})
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def get_client_ip(self, request):
+        """Get client IP address."""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+
     def get_permissions(self):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
             # Only tenant admins or global admins can modify users

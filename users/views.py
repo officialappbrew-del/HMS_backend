@@ -7,18 +7,24 @@ from django.contrib.auth import login, logout, authenticate
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import Q as models_Q
 import pyotp
 import qrcode
 import base64
+import uuid
+import logging
 from io import BytesIO
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     GlobalUser, User2FA, RSAKey, UserSession,
-    SecurityEvent, UserNotification
+    SecurityEvent, UserNotification, PasswordResetToken
 )
 from .serializers import (
     GlobalUserSerializer, LoginSerializer, TwoFASerializer,
     RSASerializer, RSAKeyGenerationSerializer, PasswordChangeSerializer,
+    PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     UserSessionSerializer, SecurityEventSerializer,
     UserNotificationSerializer, TOTPSetupSerializer, BackupCodeSerializer
 )
@@ -735,6 +741,135 @@ class AuthenticationView(APIView):
         else:
             ip = request.META.get('REMOTE_ADDR')
         return ip
+
+
+class PasswordResetRequestView(APIView):
+    """Request a password reset token."""
+    permission_classes = [permissions.AllowAny]
+    
+    def get_client_ip(self, request):
+        """Get client IP address."""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+    
+    def post(self, request):
+        serializer = PasswordResetRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        identifier = serializer.validated_data['identifier'].strip()
+        ip_address = self.get_client_ip(request)
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+        
+        user = None
+        user_type = None
+        
+        if identifier:
+            user = GlobalUser.objects.filter(
+                models_Q(username=identifier) |
+                models_Q(email=identifier) |
+                models_Q(employee_id=identifier)
+            ).first()
+            if user:
+                user_type = 'global'
+            else:
+                from tenants.models import TenantUser
+                user = TenantUser.objects.filter(
+                    models_Q(username=identifier) |
+                    models_Q(email=identifier) |
+                    models_Q(employee_id=identifier)
+                ).first()
+                if user:
+                    user_type = 'tenant'
+        
+        token_value = uuid.uuid4().hex + uuid.uuid4().hex
+        expires_at = timezone.now() + timezone.timedelta(hours=1)
+        recipient_email = user.email if user else identifier
+        
+        reset_token = PasswordResetToken.objects.create(
+            email=recipient_email,
+            token=token_value,
+            expires_at=expires_at,
+            user_type=user_type or 'global',
+            user_id=user.id if user else 0,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        
+        from .tasks import send_password_reset_email_task
+        logger.info(f'📧 Submitting password reset email task for {recipient_email}')
+        task_result = send_password_reset_email_task.delay(
+            recipient_email=recipient_email,
+            reset_token=reset_token.token,
+            user_name=getattr(user, 'get_full_name', lambda: None)() if user else None,
+        )
+        logger.info(f'   Task ID: {task_result.id}')
+        logger.info(f'   Task State: {task_result.state}')
+        
+        return Response({
+            'detail': 'If an account exists for this identifier, a password reset email has been sent.',
+            'email': recipient_email,
+            'expires_at': reset_token.expires_at,
+        })
+
+
+class PasswordResetConfirmView(APIView):
+    """Confirm password reset with token."""
+    permission_classes = [permissions.AllowAny]
+    
+    def get_client_ip(self, request):
+        """Get client IP address."""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+    
+    def post(self, request):
+        serializer = PasswordResetConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        reset_token = serializer.validated_data['reset_token']
+        new_password = serializer.validated_data['new_password']
+        
+        user = None
+        if reset_token.user_type == 'global':
+            user = GlobalUser.objects.filter(id=reset_token.user_id).first()
+        else:
+            from tenants.models import TenantUser
+            user = TenantUser.objects.filter(id=reset_token.user_id).first()
+        
+        if not user:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if hasattr(user, 'set_password'):
+            user.set_password(new_password)
+        else:
+            from django.contrib.auth.hashers import make_password
+            user.password = make_password(new_password)
+        user.password_changed_at = timezone.now()
+        user.save()
+        
+        reset_token.is_used = True
+        reset_token.save(update_fields=['is_used'])
+        
+        if hasattr(user, 'security_events'):
+            SecurityEvent.objects.create(
+                user=user,
+                event_type='password_reset',
+                severity='INFO',
+                description='Password reset via token',
+                ip_address=self.get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        
+        return Response({'detail': 'Password reset successfully. You can now log in with your new password.'})
 
 
 class TwoFAView(APIView):

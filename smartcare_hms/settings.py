@@ -7,6 +7,9 @@ from datetime import timedelta
 import dj_database_url
 from decouple import config
 
+# Import logging configuration
+from .logging_config import setup_logging
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -63,6 +66,11 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django_tenants.middleware.main.TenantMainMiddleware',  # Add this last
     'tenants.middleware.HeaderTenantMiddleware',  # Custom middleware for header-based tenant resolution
+    
+    # Logging middleware
+    'smartcare_hms.logging_middleware.CorrelationIdMiddleware',
+    'smartcare_hms.logging_middleware.EnrichLoggingContextMiddleware',
+    'smartcare_hms.logging_middleware.RequestResponseLoggingMiddleware',
 ]
 
 ROOT_URLCONF = 'smartcare_hms.urls'
@@ -268,26 +276,37 @@ if not DEBUG:
     SECURE_HSTS_PRELOAD = True
     SECURE_SSL_REDIRECT = True
 
-# Email settings
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='localhost')
-EMAIL_PORT = config('EMAIL_PORT', default=25, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=bool)
+# Email settings - Send real emails in both development and production
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='webmaster@localhost')
 
-# Celery settings (simplified for development)
-CELERY_BROKER_URL = 'memory://'
-CELERY_RESULT_BACKEND = 'django-db'
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@smartcarehms.local')
+SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
+
+# Celery settings
+if DEBUG:
+    # Development: Use synchronous task execution (no broker needed)
+    CELERY_TASK_ALWAYS_EAGER = True  # Execute tasks immediately instead of queueing
+    CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='memory://')
+else:
+    # Production: Use Redis or RabbitMQ
+    CELERY_TASK_ALWAYS_EAGER = False
+    CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='django-db')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
-
-# For Redis Celery (uncomment when ready)
-# CELERY_BROKER_URL = config('REDIS_URL', default='redis://localhost:6379/0')
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 # Encryption key for sensitive data
 ENCRYPTION_KEY = config('ENCRYPTION_KEY', default='your-32-char-key-for-encryption-change-this')
@@ -305,45 +324,11 @@ SWAGGER_SETTINGS = {
 }
 
 # Logging
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {message}',
-            'style': '{',
-        },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
-    },
-    'handlers': {
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
-            'formatter': 'simple'
-        },
-        'file': {
-            'level': 'WARNING',
-            'class': 'logging.FileHandler',
-            'filename': BASE_DIR / 'logs' / 'django.log',
-            'formatter': 'verbose'
-        },
-    },
-    'loggers': {
-        'django': {
-            'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': True,
-        },
-        'apps': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-    },
-}
+# Disable Django's default logging configuration
+LOGGING_CONFIG = None
+
+# Enterprise-grade logging configuration
+setup_logging(BASE_DIR, debug=DEBUG)
 
 # File upload settings
 FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5 MB
@@ -352,6 +337,9 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 MB
 # Application-specific settings
 MAX_PATIENTS_PER_TENANT = 10000
 MAX_USERS_PER_TENANT = 100
+
+# Frontend URL for password reset links
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
 
 # Integration keys (optional)
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
@@ -367,7 +355,6 @@ MEDIA_ROOT.mkdir(exist_ok=True)
 
 # Storage backend configuration (Supabase, S3, or local)
 from .storage import *  # noqa: E402,F403
-
 
 
 # Multi-tenancy settings

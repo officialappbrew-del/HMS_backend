@@ -7,7 +7,7 @@ import pyotp
 import base64
 import hashlib
 
-from .models import GlobalUser, User2FA, RSAKey, UserSession, SecurityEvent, UserNotification
+from .models import GlobalUser, User2FA, RSAKey, UserSession, SecurityEvent, UserNotification, PasswordResetToken
 from core.models import AuditLog
 
 
@@ -225,6 +225,48 @@ class PasswordChangeSerializer(serializers.Serializer):
         if old_password == new_password:
             raise serializers.ValidationError({"new_password": "New password must be different from current password."})
         
+        return data
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    identifier = serializers.CharField(required=True)
+    
+    def validate(self, data):
+        identifier = data.get('identifier', '').strip()
+        if not identifier:
+            raise serializers.ValidationError({'identifier': 'Please enter your user ID or email.'})
+        return data
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    token = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True, write_only=True)
+    confirm_password = serializers.CharField(required=True, write_only=True)
+    
+    def validate(self, data):
+        token = data.get('token')
+        new_password = data.get('new_password')
+        confirm_password = data.get('confirm_password')
+        
+        if not token or not token.strip():
+            raise serializers.ValidationError({'token': 'Reset token is required.'})
+        
+        if new_password != confirm_password:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        
+        try:
+            validate_password(new_password)
+        except Exception as e:
+            raise serializers.ValidationError({'new_password': list(e)})
+        
+        reset_token = PasswordResetToken.objects.filter(token=token.strip()).first()
+        if not reset_token:
+            raise serializers.ValidationError({'token': 'Invalid reset token.'})
+        
+        if not reset_token.is_valid():
+            raise serializers.ValidationError({'token': 'Reset token has expired or already been used.'})
+        
+        data['reset_token'] = reset_token
         return data
 
 

@@ -5,6 +5,7 @@ from .views import (
     UserViewSet, AuthenticationView, TwoFAView,
     RSAKeyViewSet, UserSessionViewSet, SecurityEventViewSet,
     UserNotificationViewSet, TwoFASetupView, BackupCodeView,
+    PasswordResetRequestView, PasswordResetConfirmView,
     tenant_aware_token_refresh
 )
 
@@ -18,6 +19,8 @@ router.register(r'notifications', UserNotificationViewSet, basename='notificatio
 urlpatterns = [
     # Authentication endpoints
     path('login/', AuthenticationView.as_view(), name='login'),
+    path('password-reset/', PasswordResetRequestView.as_view(), name='password-reset-request'),
+    path('password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('verify-2fa/', TwoFAView.as_view(), name='verify-2fa'),
     path('token/refresh/', tenant_aware_token_refresh, name='token_refresh'),
     

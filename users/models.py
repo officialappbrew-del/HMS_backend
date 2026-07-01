@@ -469,3 +469,33 @@ class UserNotification(BaseModel):
         if self.expires_at:
             return timezone.now() > self.expires_at
         return False
+
+
+class PasswordResetToken(BaseModel):
+    """Password reset token for account recovery."""
+    email = models.EmailField()
+    token = models.CharField(max_length=64, unique=True)
+    is_used = models.BooleanField(default=False)
+    expires_at = models.DateTimeField()
+    user_type = models.CharField(max_length=20, choices=[
+        ('global', 'Global User'),
+        ('tenant', 'Tenant User'),
+    ])
+    user_id = models.IntegerField()
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    
+    def is_valid(self):
+        return not self.is_used and timezone.now() < self.expires_at
+    
+    def __str__(self):
+        return f"Password reset for {self.email} ({self.user_type})"
+    
+    class Meta:
+        verbose_name = _('Password Reset Token')
+        verbose_name_plural = _('Password Reset Tokens')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token', 'is_used', 'expires_at']),
+            models.Index(fields=['email', 'created_at']),
+        ]
