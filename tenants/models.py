@@ -91,7 +91,8 @@ class Tenant(BaseModel):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_tenants'
+        related_name='created_tenants',
+        db_index=True,
     )
 
 
@@ -249,8 +250,8 @@ class TenantUser(BaseModel):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='users')
     
     # Authentication
-    username = models.CharField(max_length=150, unique=True, blank=True)
-    email = models.EmailField(unique=True)
+    username = models.CharField(max_length=150, blank=True)
+    email = models.EmailField()
     password = models.CharField(max_length=128)
     
     # Personal Information
@@ -275,7 +276,7 @@ class TenantUser(BaseModel):
     # Employment Details
     employee_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
     role = models.CharField(max_length=50, choices=UserRole.choices)
-    department = models.ForeignKey('Department', on_delete=models.SET_NULL, null=True, blank=True)
+    department = models.ForeignKey('Department', on_delete=models.SET_NULL, null=True, blank=True, db_index=True)
     designation = models.CharField(max_length=100, blank=True)
     employment_date = models.DateField(null=True, blank=True)
     employment_status = models.CharField(max_length=20, choices=[
@@ -284,7 +285,7 @@ class TenantUser(BaseModel):
         ('suspended', 'Suspended'),
         ('terminated', 'Terminated'),
         ('retired', 'Retired')
-    ], default='active')
+    ], default='active', db_index=True)
     
     # Professional Details (for medical staff)
     qualification = models.TextField(blank=True)
@@ -297,7 +298,7 @@ class TenantUser(BaseModel):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     last_login = models.DateTimeField(null=True, blank=True)
-    last_login_ip = models.GenericIPAddressField(null=True, blank=True)
+    last_login_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     password_changed_at = models.DateTimeField(auto_now_add=True)
     failed_login_attempts = models.IntegerField(default=0)
     account_locked_until = models.DateTimeField(null=True, blank=True)
@@ -324,6 +325,7 @@ class TenantUser(BaseModel):
         verbose_name = _('Tenant User')
         verbose_name_plural = _('Tenant Users')
         unique_together = [['tenant', 'username'], ['tenant', 'email']]
+        ordering = ['tenant', 'username', 'email']
         indexes = [
             models.Index(fields=['tenant', 'username']),
             models.Index(fields=['tenant', 'email']),

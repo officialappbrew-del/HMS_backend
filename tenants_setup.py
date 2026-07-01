@@ -66,10 +66,11 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
     schema_name='public',
     defaults={
         'name': 'Render',
-        # 'code': 'PUBLIC',
+        'code': 'LOCAL',
         'domain': 'hms-backend-l09g.onrender.com',
-        'domain': 'localhost',
+        # 'domain': 'localhost',
         'email': 'admin.app@onrender.com',
+        # 'email': 'admin.app@local.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',

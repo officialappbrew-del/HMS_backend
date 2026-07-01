@@ -111,3 +111,69 @@ class GrandRound(BaseModel):
 
     def __str__(self):
         return f"{self.topic} - {self.get_status_display()}"
+
+
+class Ward(BaseModel):
+    """Ward and bed grouping for inpatient allocation."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='wards')
+    ward_id = models.CharField(max_length=50)
+    ward_name = models.CharField(max_length=200)
+    ward_type = models.CharField(max_length=100, default='General Ward')
+    floor = models.CharField(max_length=50, blank=True)
+    supervisor = models.CharField(max_length=200, blank=True)
+    staff_count = models.PositiveIntegerField(default=0)
+    total_beds = models.PositiveIntegerField(default=0)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = _('Ward')
+        verbose_name_plural = _('Wards')
+        ordering = ['ward_name']
+        unique_together = [['tenant', 'ward_id']]
+        indexes = [
+            models.Index(fields=['tenant', 'ward_id']),
+            models.Index(fields=['ward_name']),
+        ]
+
+    def __str__(self):
+        return f"{self.ward_name} ({self.ward_id})"
+
+
+class Bed(BaseModel):
+    """Individual bed within a ward."""
+    class Status(models.TextChoices):
+        AVAILABLE = 'Available', _('Available')
+        OCCUPIED = 'Occupied', _('Occupied')
+        RESERVED = 'Reserved', _('Reserved')
+        UNDER_CLEANING = 'Under Cleaning', _('Under Cleaning')
+        MAINTENANCE = 'Maintenance', _('Maintenance')
+
+    class CleaningStatus(models.TextChoices):
+        CLEAN = 'Clean', _('Clean')
+        UNDER_CLEANING = 'Under Cleaning', _('Under Cleaning')
+        MAINTENANCE = 'Maintenance', _('Maintenance')
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='beds')
+    ward = models.ForeignKey(Ward, on_delete=models.CASCADE, related_name='beds')
+    bed_id = models.CharField(max_length=50)
+    bed_number = models.PositiveIntegerField()
+    bed_type = models.CharField(max_length=100, default='Standard')
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.AVAILABLE)
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='beds')
+    is_private = models.BooleanField(default=False)
+    cleaning_status = models.CharField(max_length=30, choices=CleaningStatus.choices, default=CleaningStatus.CLEAN)
+    last_cleaned = models.DateTimeField(null=True, blank=True)
+    last_turnover = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _('Bed')
+        verbose_name_plural = _('Beds')
+        ordering = ['ward', 'bed_number']
+        unique_together = [['ward', 'bed_number'], ['ward', 'bed_id']]
+        indexes = [
+            models.Index(fields=['tenant', 'ward', 'status']),
+            models.Index(fields=['ward', 'bed_number']),
+        ]
+
+    def __str__(self):
+        return f"{self.ward.ward_name} - Bed {self.bed_number}"

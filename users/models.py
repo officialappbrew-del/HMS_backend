@@ -69,9 +69,9 @@ class GlobalUser(AbstractUser):
     backup_codes = EncryptedField(null=True, blank=True)  # JSON list of backup codes
     
     # Security tracking
-    last_login_ip = models.GenericIPAddressField(null=True, blank=True)
+    last_login_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     login_attempts = models.IntegerField(default=0)
-    account_locked_until = models.DateTimeField(null=True, blank=True)
+    account_locked_until = models.DateTimeField(null=True, blank=True, db_index=True)
     password_changed_at = models.DateTimeField(auto_now_add=True)
     last_security_alert = models.DateTimeField(null=True, blank=True)
     
@@ -87,7 +87,8 @@ class GlobalUser(AbstractUser):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_users'
+        related_name='created_users',
+        db_index=True,
     )
     notes = models.TextField(blank=True)
     
@@ -98,6 +99,10 @@ class GlobalUser(AbstractUser):
         verbose_name = _('Global User')
         verbose_name_plural = _('Global Users')
         ordering = ['-date_joined']
+        indexes = [
+            models.Index(fields=['role', 'is_active']),
+            models.Index(fields=['account_locked_until', 'is_active']),
+        ]
     
     def generate_rsa_keys(self):
         """Generate RSA key pair for the user."""
@@ -195,9 +200,9 @@ class User2FA(BaseModel):
     trusted_devices = models.JSONField(default=list, blank=True)
     
     # Usage tracking
-    last_used = models.DateTimeField(null=True, blank=True)
-    failed_attempts = models.IntegerField(default=0)
-    last_failed_attempt = models.DateTimeField(null=True, blank=True)
+    last_used = models.DateTimeField(null=True, blank=True, db_index=True)
+    failed_attempts = models.IntegerField(default=0, db_index=True)
+    last_failed_attempt = models.DateTimeField(null=True, blank=True, db_index=True)
     
     def __str__(self):
         return f"2FA Settings for {self.user.username}"
@@ -250,8 +255,8 @@ class RSAKey(BaseModel):
     key_fingerprint = models.CharField(max_length=128, unique=True)
     key_size = models.IntegerField(default=2048)
     created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
-    last_used = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+    last_used = models.DateTimeField(null=True, blank=True, db_index=True)
     usage_count = models.IntegerField(default=0)
     
     # Key metadata
@@ -266,6 +271,10 @@ class RSAKey(BaseModel):
         verbose_name = _('RSA Key')
         verbose_name_plural = _('RSA Keys')
         ordering = ['-is_primary', '-created_at']
+        indexes = [
+            models.Index(fields=['is_primary', 'user']),
+            models.Index(fields=['expires_at', 'is_primary']),
+        ]
     
     def save(self, *args, **kwargs):
         # Generate fingerprint if not set
@@ -313,15 +322,15 @@ class UserSession(BaseModel):
         related_name='sessions'
     )
     session_key = models.CharField(max_length=128, unique=True)
-    ip_address = models.GenericIPAddressField()
+    ip_address = models.GenericIPAddressField(db_index=True)
     user_agent = models.TextField()
     device_info = models.JSONField(default=dict, blank=True)
     location_info = models.JSONField(default=dict, blank=True)
     
     # Session state
-    is_active = models.BooleanField(default=True)
-    last_activity = models.DateTimeField(auto_now=True)
-    expires_at = models.DateTimeField()
+    is_active = models.BooleanField(default=True, db_index=True)
+    last_activity = models.DateTimeField(auto_now=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
     
     # Security flags
     requires_reauth = models.BooleanField(default=False)
@@ -334,6 +343,10 @@ class UserSession(BaseModel):
         verbose_name = _('User Session')
         verbose_name_plural = _('User Sessions')
         ordering = ['-last_activity']
+        indexes = [
+            models.Index(fields=['user', 'is_active', 'last_activity']),
+            models.Index(fields=['expires_at', 'is_active']),
+        ]
     
     def is_expired(self):
         """Check if session is expired."""
@@ -378,7 +391,7 @@ class SecurityEvent(BaseModel):
     event_type = models.CharField(max_length=50, choices=EventType.choices)
     severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.INFO)
     description = models.TextField()
-    ip_address = models.GenericIPAddressField()
+    ip_address = models.GenericIPAddressField(db_index=True)
     user_agent = models.TextField(blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     resolved = models.BooleanField(default=False)
@@ -448,7 +461,7 @@ class UserNotification(BaseModel):
     action_notes = models.TextField(blank=True)
     
     # Expiry
-    expires_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     
     def __str__(self):
         return f"{self.title} - {self.user.username}"
@@ -457,6 +470,10 @@ class UserNotification(BaseModel):
         verbose_name = _('User Notification')
         verbose_name_plural = _('User Notifications')
         ordering = ['-created_at', 'priority']
+        indexes = [
+            models.Index(fields=['user', 'is_read', 'created_at']),
+            models.Index(fields=['notification_type', 'is_read']),
+        ]
     
     def mark_as_read(self):
         """Mark notification as read."""
@@ -498,4 +515,5 @@ class PasswordResetToken(BaseModel):
         indexes = [
             models.Index(fields=['token', 'is_used', 'expires_at']),
             models.Index(fields=['email', 'created_at']),
+            models.Index(fields=['user_id', 'is_used']),
         ]

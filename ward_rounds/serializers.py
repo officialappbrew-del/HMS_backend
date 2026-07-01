@@ -1,6 +1,43 @@
 from rest_framework import serializers
 from django.utils import timezone
-from .models import WardRound, HandoverNote, GrandRound
+from .models import WardRound, HandoverNote, GrandRound, Ward, Bed
+
+
+class WardSerializer(serializers.ModelSerializer):
+    wardId = serializers.CharField(source='ward_id')
+    wardName = serializers.CharField(source='ward_name')
+    wardType = serializers.CharField(source='ward_type')
+    totalBeds = serializers.IntegerField(source='total_beds')
+    staffCount = serializers.IntegerField(source='staff_count')
+
+    class Meta:
+        model = Ward
+        fields = [
+            'id', 'wardId', 'wardName', 'wardType', 'floor', 'supervisor',
+            'staffCount', 'totalBeds', 'notes', 'created_at', 'updated_at', 'is_active'
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'is_active']
+
+
+class BedSerializer(serializers.ModelSerializer):
+    bedId = serializers.CharField(source='bed_id')
+    bedNumber = serializers.IntegerField(source='bed_number')
+    bedType = serializers.CharField(source='bed_type')
+    isPrivate = serializers.BooleanField(source='is_private')
+    cleaningStatus = serializers.CharField(source='cleaning_status')
+    lastCleaned = serializers.DateTimeField(source='last_cleaned', required=False, allow_null=True)
+    lastTurnover = serializers.DateTimeField(source='last_turnover', required=False, allow_null=True)
+    wardId = serializers.CharField(source='ward.ward_id', read_only=True)
+    patientId = serializers.CharField(source='patient.hospital_number', read_only=True)
+
+    class Meta:
+        model = Bed
+        fields = [
+            'id', 'bedId', 'bedNumber', 'bedType', 'status', 'patientId',
+            'isPrivate', 'cleaningStatus', 'lastCleaned', 'lastTurnover',
+            'wardId', 'created_at', 'updated_at', 'is_active'
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'is_active']
 
 
 class WardRoundSerializer(serializers.ModelSerializer):

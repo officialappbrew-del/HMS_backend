@@ -193,15 +193,15 @@ class SystemSetting(models.Model):
 
 class AuditLog(models.Model):
     """Audit log for all system activities."""
-    user = models.ForeignKey('users.GlobalUser', on_delete=models.SET_NULL, null=True, blank=True)
-    action = models.CharField(max_length=50)
-    resource_type = models.CharField(max_length=50)
-    resource_id = models.CharField(max_length=50)
+    user = models.ForeignKey('users.GlobalUser', on_delete=models.SET_NULL, null=True, blank=True, db_index=True)
+    action = models.CharField(max_length=50, db_index=True)
+    resource_type = models.CharField(max_length=50, db_index=True)
+    resource_id = models.CharField(max_length=50, db_index=True)
     old_values = models.JSONField(null=True, blank=True)
     new_values = models.JSONField(null=True, blank=True)
-    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     user_agent = models.TextField(blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
     
     def __str__(self):
         return f"{self.action} - {self.resource_type} - {self.timestamp}"
@@ -210,6 +210,10 @@ class AuditLog(models.Model):
         verbose_name = _('Audit Log')
         verbose_name_plural = _('Audit Logs')
         ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['timestamp', 'action']),
+            models.Index(fields=['resource_type', 'resource_id']),
+        ]
 
 
 class BackupLog(models.Model):

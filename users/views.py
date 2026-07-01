@@ -17,6 +17,7 @@ from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
+from smartcare_hms.throttling import AuthenticationThrottle
 from .models import (
     GlobalUser, User2FA, RSAKey, UserSession,
     SecurityEvent, UserNotification, PasswordResetToken
@@ -439,6 +440,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class AuthenticationView(APIView):
     """Handle both global and tenant user authentication."""
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthenticationThrottle]
     
     def post(self, request):
         # Fix: Ensure request.data is a dictionary

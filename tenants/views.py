@@ -394,8 +394,8 @@ class TenantViewSet(viewsets.ModelViewSet):
                 resource_id=str(tenant.id),
                 new_values=audit_payload
             )
-            
-            # Create initial admin user
+
+            # Create initial admin user inside the tenant schema
             admin_data = {
                 'username': f"admin@{tenant.domain.split('.')[0]}",
                 'email': tenant.email,
@@ -405,13 +405,17 @@ class TenantViewSet(viewsets.ModelViewSet):
                 'password': 'TempPass123!',
                 'is_staff': True,
             }
-            
-            admin_user = TenantUser.objects.create(
-                tenant=tenant,
-                **admin_data
-            )
-            admin_user.set_password(admin_data['password'])
-            admin_user.save()
+
+            try:
+                connection.set_schema(tenant.schema_name)
+                admin_user = TenantUser.objects.create(
+                    tenant=tenant,
+                    **admin_data
+                )
+                admin_user.set_password(admin_data['password'])
+                admin_user.save()
+            finally:
+                connection.set_schema('public')
     
     def perform_update(self, serializer):
         old_tenant = self.get_object()
@@ -1024,6 +1028,8 @@ class TenantUserViewSet(viewsets.ModelViewSet):
     serializer_class = TenantUserSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
+    ordering = ['username', 'email']
+    ordering_fields = ['username', 'email', 'first_name', 'last_name', 'role']
     
     def _get_request_tenant_user(self):
         """Resolve the TenantUser instance associated with the current request."""

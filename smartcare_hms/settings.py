@@ -58,6 +58,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'smartcare_hms.throttling.RateLimitMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -226,6 +227,20 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'smartcare_hms.throttling.UserAPIThrottle',
+        'smartcare_hms.throttling.AnonymousUserThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'api': '100/hour',
+        'anon': '50/hour',
+        'auth': '5/min',
+        'password_reset': '3/hour',
+        'password_reset_confirm': '5/hour',
+        'login_attempt': '5/15min',
+        '2fa': '5/15min',
+        'audit': '1000/hour',
+    }
 }
 
 # JWT Settings
@@ -265,7 +280,9 @@ SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 
-# Security settings (only in production)
+# Security settings
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default='false', cast=bool)
+
 if not DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -274,7 +291,6 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-    SECURE_SSL_REDIRECT = True
 
 # Email settings - Send real emails in both development and production
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
