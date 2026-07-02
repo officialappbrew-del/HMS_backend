@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'cds',
     'audit',
     'ward_rounds',
+    'ndpr',
 ]
 
 MIDDLEWARE = [

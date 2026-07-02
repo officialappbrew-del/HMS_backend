@@ -1,10 +1,12 @@
 from django.db import connection
 from django.test import TestCase
+from rest_framework import viewsets
 
 from core.models import Country, FacilityType
 from tenants.models import SubscriptionPlan, Tenant
+from .emergency_api import EmergencyCallViewSet
 from .models import Ward, Bed, Admission
-from .serializers import BedSerializer, WardSerializer, AdmissionSerializer
+from .serializers import BedSerializer, WardSerializer, AdmissionSerializer, DutyRosterSerializer, LeaveRequestSerializer, PerformanceAppraisalSerializer
 
 
 class AdmissionSerializerTests(TestCase):
@@ -98,6 +100,89 @@ class AdmissionSerializerTests(TestCase):
 
         self.assertEqual(admission.discharge_summary['followUpInstructions'], 'Review in 2 weeks')
         self.assertEqual(admission.transfer_history[0]['toWardId'], 'WARD-02')
+
+
+class EmergencyApiViewSetTests(TestCase):
+    def test_dispatch_method_is_not_shadowed_by_emergency_action(self):
+        self.assertIs(EmergencyCallViewSet.dispatch, viewsets.ViewSet.dispatch)
+
+
+class RosterPerformanceSerializerTests(TestCase):
+    def setUp(self):
+        country = Country.objects.create(name='Nigeria', code='NG', phone_code='+234', currency='NGN', timezone='Africa/Lagos')
+        facility_type = FacilityType.objects.create(name='Hospital', description='Test', code='HOSP')
+        subscription_plan = SubscriptionPlan.objects.create(
+            name='Basic',
+            code='basic',
+            description='Test plan',
+            price_monthly=0,
+            price_quarterly=0,
+            price_yearly=0,
+            currency='NGN',
+            max_users=10,
+            max_patients=100,
+            max_storage_gb=1,
+            max_api_calls_per_day=1000,
+        )
+        self.tenant = Tenant.objects.create(
+            name='Test Facility',
+            code='TF3',
+            domain='test-facility-3.localhost',
+            schema_name='test_facility_3',
+            email='test3@example.com',
+            phone='08000000002',
+            address='Test address',
+            city='Lagos',
+            country=country,
+            facility_type=facility_type,
+            subscription_plan=subscription_plan,
+            registration_number='REG125',
+        )
+
+    def test_duty_roster_serializer_creates_assignments(self):
+        serializer = DutyRosterSerializer(data={
+            'month': 'January',
+            'year': 2026,
+            'department': 'Internal Medicine',
+            'status': 'Draft',
+            'assignments': [{
+                'staffId': 'DR001',
+                'staffName': 'Dr. Ada Okafor',
+                'date': '2026-01-05',
+                'dutyType': 'Call Duty',
+                'startTime': '20:00',
+                'endTime': '08:00',
+                'notes': 'Emergency cover'
+            }],
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        roster = serializer.save(tenant=self.tenant)
+        self.assertEqual(roster.assignments.count(), 1)
+        self.assertEqual(roster.assignments.first().staff_id, 'DR001')
+
+    def test_performance_appraisal_serializer_creates_with_camel_case_fields(self):
+        serializer = PerformanceAppraisalSerializer(data={
+            'staffId': 'DR001',
+            'staffName': 'Dr. Ada Okafor',
+            'appraisalYear': 2026,
+            'period': 'Jan-Dec 2026',
+            'rater': 'Dr. Bassey',
+            'rating': 4.5,
+            'clinicalExcellence': 4.7,
+            'patientCare': 4.8,
+            'teamwork': 4.2,
+            'leadership': 4.3,
+            'continuousLearning': 4.6,
+            'overallComments': 'Excellent',
+            'status': 'Completed',
+            'date': '2026-01-15',
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        appraisal = serializer.save(tenant=self.tenant)
+        self.assertEqual(appraisal.staff_id, 'DR001')
+        self.assertEqual(appraisal.overall_comments, 'Excellent')
 
 
 class WardSerializerTests(TestCase):

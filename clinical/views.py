@@ -32,6 +32,13 @@ class TenantScopedModelViewSet(viewsets.ModelViewSet):
             return self.queryset.filter(tenant=tenant)
         return self.queryset.none()
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        user = self.request.user
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            context['tenant'] = user.tenant_user.tenant
+        return context
+
     def perform_create(self, serializer):
         user = self.request.user
         tenant = None
@@ -40,6 +47,12 @@ class TenantScopedModelViewSet(viewsets.ModelViewSet):
         if not tenant:
             raise permissions.PermissionDenied("Tenant context required.")
         serializer.save(tenant=tenant)
+
+    def get_tenant(self):
+        user = self.request.user
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            return user.tenant_user.tenant
+        return None
 
 
 class ConsultationNoteViewSet(TenantScopedModelViewSet):
