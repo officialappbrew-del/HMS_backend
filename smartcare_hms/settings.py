@@ -162,7 +162,8 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+# Use simpler storage in DEBUG mode to avoid warnings about missing staticfiles dir
+STATICFILES_STORAGE = 'whitenoise.storage.StaticFilesStorage' if DEBUG else 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Media files
 MEDIA_URL = '/media/'
@@ -178,7 +179,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in config(
         'CORS_ALLOWED_ORIGINS',
-        default='http://localhost:5173,http://localhost:9090'
+        default='http://localhost:5173,http://127.0.0.1:5173,http://localhost:9090,http://127.0.0.1:9090'
     ).split(',')
     if origin.strip()
 ]
@@ -193,7 +194,7 @@ CSRF_TRUSTED_ORIGINS = [
     origin.strip()
     for origin in config(
         'CSRF_TRUSTED_ORIGINS',
-        default='http://localhost:5173,http://localhost:9090'
+        default='http://localhost:5173,http://127.0.0.1:5173,http://localhost:9090,http://127.0.0.1:9090'
     ).split(',')
     if origin.strip()
 ]

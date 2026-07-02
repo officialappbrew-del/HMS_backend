@@ -81,6 +81,62 @@ class HandoverNote(BaseModel):
         return f"{self.ward_name} - {self.shift_from} to {self.shift_to}"
 
 
+class Admission(BaseModel):
+    """Admission request and in-patient admission workflow."""
+    class AdmissionStatus(models.TextChoices):
+        REQUESTED = 'Requested', _('Requested')
+        APPROVED = 'Approved', _('Approved')
+        ADMITTED = 'Admitted', _('Admitted')
+        DISCHARGED = 'Discharged', _('Discharged')
+        TRANSFERRED = 'Transferred', _('Transferred')
+        REJECTED = 'Rejected', _('Rejected')
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='admissions')
+    request_id = models.CharField(max_length=50, unique=True, blank=True)
+    patient_id = models.CharField(max_length=50)
+    patient_name = models.CharField(max_length=200)
+    request_date = models.DateTimeField(default=timezone.now)
+    source = models.CharField(max_length=100, default='Direct Admission')
+    diagnosis = models.TextField(blank=True)
+    preferred_ward_type = models.CharField(max_length=100, blank=True)
+    priority = models.CharField(max_length=20, default='Medium')
+    status = models.CharField(max_length=20, choices=AdmissionStatus.choices, default=AdmissionStatus.REQUESTED)
+    rejection_reason = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    ward_id = models.CharField(max_length=50, blank=True)
+    bed_id = models.CharField(max_length=50, blank=True)
+    consultant_name = models.CharField(max_length=200, blank=True)
+    consultant_specialty = models.CharField(max_length=200, blank=True)
+    expected_stay = models.PositiveIntegerField(default=0)
+    planned_discharge_date = models.DateTimeField(null=True, blank=True)
+    actual_stay = models.PositiveIntegerField(null=True, blank=True)
+    date_of_admission = models.DateTimeField(null=True, blank=True)
+    discharge_date = models.DateTimeField(null=True, blank=True)
+    discharge_summary = models.JSONField(default=dict, blank=True)
+    transfer_history = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        verbose_name = _('Admission')
+        verbose_name_plural = _('Admissions')
+        ordering = ['-request_date']
+        indexes = [
+            models.Index(fields=['tenant', 'status', '-request_date']),
+            models.Index(fields=['tenant', 'patient_id']),
+        ]
+
+    def __str__(self):
+        return f"{self.patient_name} ({self.status})"
+
+    @property
+    def requestId(self):
+        return self.request_id
+
+    def save(self, *args, **kwargs):
+        if not self.request_id:
+            self.request_id = f"REQ{self.id or '0'}"
+        super().save(*args, **kwargs)
+
+
 class GrandRound(BaseModel):
     """Grand rounds for teaching and case discussions."""
     class RoundStatus(models.TextChoices):
