@@ -1,6 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import create_tenant_admin
+from .views import create_tenant_admin, create_tenant_root_admin
 
 from .views import (
     TenantViewSet, SubscriptionPlanViewSet, TenantUserViewSet,
@@ -25,5 +25,6 @@ urlpatterns = [
     path('', include(router.urls)),
     path('invitations/accept/', AcceptInvitationView.as_view(), name='accept-invitation'),
     path('tenants/<uuid:tenant_id>/create-admin/', create_tenant_admin, name='create-tenant-admin'),
+    path('tenants/<uuid:tenant_id>/create-root-admin/', create_tenant_root_admin, name='create-tenant-root-admin'),
     path('active-tenants/', PublicTenantListView.as_view(), name='public-tenant-list'),
 ]

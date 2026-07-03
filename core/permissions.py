@@ -22,6 +22,23 @@ class IsTenantAdmin(permissions.BasePermission):
         )
 
 
+class IsTenantRootAdminOrGlobalAdmin(permissions.BasePermission):
+    """Check if user is a tenant root admin or global admin."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        if getattr(request.user, 'is_superuser', False):
+            return True
+
+        if getattr(request.user, 'role', None) in ['super_admin', 'system_admin']:
+            return True
+
+        tenant_user = getattr(request.user, 'tenant_user', None)
+        return bool(tenant_user and getattr(tenant_user, 'is_root_admin', False))
+
+
 class IsDoctor(permissions.BasePermission):
     """Check if user is a doctor."""
     

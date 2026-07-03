@@ -2,6 +2,29 @@
 # Run inside Django shell:
 # python manage.py shell < tenants_setup.py
 
+# Tenant creation with nested root_admin payload example:
+# {
+#   "name": "Lagos General Hospital",
+#   "domain": "lagosgeneral.com",
+#   "email": "info@lagosgeneral.com",
+#   "phone": "+2348099999999",
+#   "address": "12 Hospital Road, Lagos",
+#   "city": "Lagos",
+#   "country": 1,
+#   "facility_type": 1,
+#   "registration_number": "REG-1001",
+#   "subscription_plan": 1,
+#   "root_admin": {
+#     "first_name": "John",
+#     "last_name": "Doe",
+#     "email": "rootadmin@lagosgeneral.com",
+#     "password": "StrongPass123!",
+#     "username": "john.doe",
+#     "phone": "+2348099999999",
+#     "employee_id": "LGH-ROOT-01"
+#   }
+# }
+
 from django.utils import timezone
 
 from tenants.models import Tenant, TenantDomain, SubscriptionPlan

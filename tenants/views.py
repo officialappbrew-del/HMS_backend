@@ -12,7 +12,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_email
 from django.utils import timezone
 from django.conf import settings
-from rest_framework.parsers import JSONParser
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework import serializers
 
 from .models import (
@@ -26,7 +26,7 @@ from .serializers import (
     TenantInvitationSerializer, AcceptInvitationSerializer,
     TenantActivityLogSerializer, TenantBackupSerializer, TenantSummarySerializer
 )
-from core.permissions import IsSystemAdmin
+from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
 from core.models import AuditLog
 from users.serializers import PasswordChangeSerializer
 
@@ -395,27 +395,67 @@ class TenantViewSet(viewsets.ModelViewSet):
                 new_values=audit_payload
             )
 
-            # Create initial admin user inside the tenant schema
-            admin_data = {
-                'username': f"admin@{tenant.domain.split('.')[0]}",
-                'email': tenant.email,
-                'first_name': 'Admin',
-                'last_name': tenant.name,
-                'role': 'admin',
-                'password': 'TempPass123!',
-                'is_staff': True,
-            }
+            root_admin_data = getattr(serializer, 'root_admin_data', None)
+            if root_admin_data:
+                # Create tenant root admin
+                root_username = root_admin_data.get('username') or f"{root_admin_data['first_name'].lower()}.{root_admin_data['last_name'].lower()}".replace(' ', '_')
+                unique_username = root_username
+                counter = 1
+                while TenantUser.objects.filter(tenant=tenant, username=unique_username).exists():
+                    unique_username = f"{root_username}{counter}"
+                    counter += 1
 
-            try:
-                connection.set_schema(tenant.schema_name)
+                if TenantUser.objects.filter(tenant=tenant, email=root_admin_data['email']).exists():
+                    raise serializers.ValidationError({'root_admin.email': ['A user with this email already exists for this tenant.']})
+
                 admin_user = TenantUser.objects.create(
                     tenant=tenant,
-                    **admin_data
+                    username=unique_username,
+                    email=root_admin_data['email'],
+                    first_name=root_admin_data['first_name'],
+                    last_name=root_admin_data['last_name'],
+                    phone=root_admin_data.get('phone', ''),
+                    role='admin',
+                    employee_id=root_admin_data.get('employee_id') or None,
+                    is_staff=True,
+                    is_active=True,
+                    is_root_admin=True,
                 )
-                admin_user.set_password(admin_data['password'])
+                admin_user.set_password(root_admin_data['password'])
                 admin_user.save()
-            finally:
-                connection.set_schema('public')
+
+                AuditLog.objects.create(
+                    user=self.request.user,
+                    action='create_root_admin',
+                    resource_type='tenant_user',
+                    resource_id=str(admin_user.id),
+                    new_values={
+                        'email': admin_user.email,
+                        'tenant': str(tenant.public_id),
+                        'is_root_admin': True,
+                    }
+                )
+            else:
+                admin_data = {
+                    'username': f"admin@{tenant.domain.split('.')[0]}",
+                    'email': tenant.email,
+                    'first_name': 'Admin',
+                    'last_name': tenant.name,
+                    'role': 'admin',
+                    'password': 'TempPass123!',
+                    'is_staff': True,
+                }
+
+                try:
+                    connection.set_schema(tenant.schema_name)
+                    admin_user = TenantUser.objects.create(
+                        tenant=tenant,
+                        **admin_data
+                    )
+                    admin_user.set_password(admin_data['password'])
+                    admin_user.save()
+                finally:
+                    connection.set_schema('public')
     
     def perform_update(self, serializer):
         old_tenant = self.get_object()
@@ -789,6 +829,14 @@ def create_tenant_admin(request, tenant_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if data.get('is_root_admin'):
+        return Response(
+            {
+                'error': 'Root admin creation is not supported on this endpoint. Use /create-root-admin/ or include root_admin when creating the tenant.'
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     # Email validation
     try:
         validate_email(email)
@@ -860,7 +908,8 @@ def create_tenant_admin(request, tenant_id):
             role='admin',
             employee_id=employee_id,
             is_staff=True,
-            is_active=True
+            is_active=True,
+            is_root_admin=bool(data.get('is_root_admin', False))
         )
     except IntegrityError as e:
         error_msg = str(e)
@@ -925,6 +974,174 @@ def create_tenant_admin(request, tenant_id):
     )
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsSystemAdmin])
+def create_tenant_root_admin(request, tenant_id):
+    try:
+        tenant = Tenant.objects.get(public_id=tenant_id)
+    except Tenant.DoesNotExist:
+        return Response(
+            {'error': 'Tenant not found.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    data = request.data
+    if isinstance(data, str):
+        try:
+            import json
+            data = json.loads(data)
+        except json.JSONDecodeError:
+            return Response(
+                {'error': 'Invalid JSON data.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    email = data.get('email')
+    password = data.get('password')
+    first_name = (data.get('first_name') or '').strip()
+    last_name = (data.get('last_name') or '').strip()
+
+    if not email or not password or not first_name or not last_name:
+        return Response(
+            {
+                'error': 'email, password, first_name, and last_name are required.'
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        validate_email(email)
+    except Exception:
+        return Response(
+            {'error': 'Invalid email format.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        validate_password(password)
+    except Exception as exc:
+        return Response(
+            {'error': exc.messages},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if TenantUser.objects.filter(tenant=tenant, is_root_admin=True).exists():
+        return Response(
+            {'error': 'A root admin already exists for this tenant.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    supplied_username = (data.get('username') or '').strip()
+    if supplied_username:
+        username = supplied_username
+    else:
+        base_username = f"{first_name.lower()}.{last_name.lower()}".replace(' ', '_')
+        username = base_username
+
+    counter = 1
+    original_username = username
+    while TenantUser.objects.filter(tenant=tenant, username=username).exists():
+        username = f"{original_username}{counter}"
+        counter += 1
+
+    employee_id = data.get('employee_id') or data.get('user_id') or None
+    if employee_id and TenantUser.objects.filter(tenant=tenant, employee_id=employee_id).exists():
+        return Response(
+            {
+                'error': 'Employee ID already exists.',
+                'code': 'DUPLICATE_EMPLOYEE_ID',
+                'details': f'The employee ID "{employee_id}" is already assigned to another user.',
+                'suggestion': 'Please use a different employee ID or leave it blank.'
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if TenantUser.objects.filter(tenant=tenant, email=email).exists():
+        return Response(
+            {
+                'error': 'Email already exists.',
+                'code': 'DUPLICATE_EMAIL',
+                'details': f'A user with email "{email}" already exists.',
+                'suggestion': 'Please use a different email address.'
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        admin_user = TenantUser.objects.create(
+            tenant=tenant,
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            phone=data.get('phone', ''),
+            role='admin',
+            employee_id=employee_id,
+            is_staff=True,
+            is_active=True,
+            is_root_admin=True,
+        )
+    except IntegrityError as e:
+        error_msg = str(e)
+        if 'employee_id' in error_msg.lower():
+            return Response(
+                {
+                    'error': 'Employee ID already exists.',
+                    'code': 'DUPLICATE_EMPLOYEE_ID',
+                    'details': f'The employee ID "{employee_id}" is already in use.',
+                    'suggestion': 'Please use a different employee ID.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif 'email' in error_msg.lower():
+            return Response(
+                {
+                    'error': 'Email already exists.',
+                    'code': 'DUPLICATE_EMAIL',
+                    'details': f'Email "{email}" is already registered.',
+                    'suggestion': 'Please use a different email.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        elif 'username' in error_msg.lower():
+            return Response(
+                {
+                    'error': 'Username already exists.',
+                    'code': 'DUPLICATE_USERNAME',
+                    'details': f'Username "{username}" is already taken.',
+                    'suggestion': 'Please use a different username.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        else:
+            return Response(
+                {
+                    'error': 'Database integrity error.',
+                    'code': 'INTEGRITY_ERROR',
+                    'details': error_msg
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    admin_user.set_password(password)
+    admin_user.save()
+    admin_user.refresh_from_db()
+
+    return Response(
+        {
+            'message': 'Tenant root admin created successfully',
+            'user': {
+                'id': admin_user.id,
+                'user_id': admin_user.employee_id,
+                'username': admin_user.username,
+                'email': admin_user.email,
+                'tenant_public_id': str(tenant.public_id),
+                'tenant_name': tenant.name,
+                'is_root_admin': admin_user.is_root_admin,
+            },
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(['GET'])
@@ -1030,6 +1247,20 @@ class TenantUserViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     ordering = ['username', 'email']
     ordering_fields = ['username', 'email', 'first_name', 'last_name', 'role']
+
+    def _is_request_root_admin(self):
+        user = self.request.user
+        if not user or not user.is_authenticated:
+            return False
+
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        if getattr(user, 'role', None) in ['super_admin', 'system_admin']:
+            return True
+
+        tenant_user = getattr(user, 'tenant_user', None)
+        return bool(tenant_user and getattr(tenant_user, 'is_root_admin', False))
     
     def _get_request_tenant_user(self):
         """Resolve the TenantUser instance associated with the current request."""
@@ -1179,6 +1410,13 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                 {'error': 'You can only edit your own profile.'},
                 status=status.HTTP_403_FORBIDDEN
             )
+        if request.data.get('is_root_admin'):
+            if not self._is_request_root_admin():
+                raise permissions.PermissionDenied('Only a tenant root admin or global admin can assign root admin privileges.')
+            if not instance.is_root_admin:
+                raise permissions.PermissionDenied(
+                    'Root admin assignment must be done through the dedicated create-root-admin endpoint.'
+                )
         return super().update(request, *args, **kwargs)
     
     def partial_update(self, request, *args, **kwargs):
@@ -1188,6 +1426,13 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                 {'error': 'You can only edit your own profile.'},
                 status=status.HTTP_403_FORBIDDEN
             )
+        if request.data.get('is_root_admin'):
+            if not self._is_request_root_admin():
+                raise permissions.PermissionDenied('Only a tenant root admin or global admin can assign root admin privileges.')
+            if not instance.is_root_admin:
+                raise permissions.PermissionDenied(
+                    'Root admin assignment must be done through the dedicated create-root-admin endpoint.'
+                )
         return super().partial_update(request, *args, **kwargs)
     
     @action(detail=False, methods=['get', 'put', 'patch'])
@@ -1210,6 +1455,13 @@ class TenantUserViewSet(viewsets.ModelViewSet):
         serializer.save()
         return Response(serializer.data)
     
+    def create(self, request, *args, **kwargs):
+        if request.data.get('is_root_admin'):
+            raise permissions.PermissionDenied(
+                'Root admin users must be created using the dedicated create-root-admin endpoint or during tenant creation.'
+            )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         user = self.request.user
         
@@ -1333,6 +1585,7 @@ class TenantSettingViewSet(viewsets.ModelViewSet):
     """ViewSet for managing tenant settings."""
     serializer_class = TenantSettingSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
     
     def get_queryset(self):
         user = self.request.user
@@ -1354,18 +1607,26 @@ class TenantSettingViewSet(viewsets.ModelViewSet):
         if self.action in ['create', 'destroy']:
             # Only global admins can create/delete settings
             return [IsSystemAdmin()]
-        return super().get_permissions()
+        return [IsTenantRootAdminOrGlobalAdmin()]
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get', 'put', 'patch'])
     def current(self, request):
-        """Get current tenant's settings."""
+        """Get or update current tenant's settings."""
         user = request.user
         
         if not hasattr(user, 'tenant_user') or not user.tenant_user:
             raise permissions.PermissionDenied("Not a tenant user")
         
         settings = get_object_or_404(TenantSetting, tenant=user.tenant_user.tenant)
-        serializer = self.get_serializer(settings)
+
+        if request.method == 'GET':
+            serializer = self.get_serializer(settings)
+            return Response(serializer.data)
+
+        partial = request.method == 'PATCH'
+        serializer = self.get_serializer(settings, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
         return Response(serializer.data)
 
 

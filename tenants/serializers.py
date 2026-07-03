@@ -26,6 +26,17 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at', 'updated_at']
 
 
+class TenantRootAdminSerializer(serializers.Serializer):
+    """Serializer for tenant root admin data supplied during tenant creation."""
+    first_name = serializers.CharField(max_length=100)
+    last_name = serializers.CharField(max_length=100)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True)
+    username = serializers.CharField(required=False, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_blank=True)
+    employee_id = serializers.CharField(required=False, allow_blank=True)
+
+
 class TenantSerializer(serializers.ModelSerializer):
     """Serializer for tenants."""
     tenant_id = serializers.UUIDField(source='public_id', read_only=True)
@@ -34,6 +45,7 @@ class TenantSerializer(serializers.ModelSerializer):
     country_name = serializers.CharField(source='country.name', read_only=True)
     facility_type_details = FacilityTypeSerializer(source='facility_type', read_only=True)
     subscription_plan_details = SubscriptionPlanSerializer(source='subscription_plan', read_only=True)
+    root_admin = TenantRootAdminSerializer(write_only=True, required=False)
     subscription_start_date = serializers.SerializerMethodField()
     subscription_end_date = serializers.SerializerMethodField()
     nhis_accreditation_date = serializers.SerializerMethodField()
@@ -103,7 +115,9 @@ class TenantSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['created_by'] = request.user
-        
+
+        root_admin_data = validated_data.pop('root_admin', None)
+
         # Create tenant
         tenant = Tenant.objects.create(**validated_data)
         
@@ -112,7 +126,9 @@ class TenantSerializer(serializers.ModelSerializer):
         
         # Create default departments
         self.create_default_departments(tenant)
-        
+
+        # Keep root admin data for view-level processing
+        self.root_admin_data = root_admin_data
         return tenant
     
     def create_default_departments(self, tenant):
@@ -277,7 +293,19 @@ class TenantUserSerializer(serializers.ModelSerializer):
         if value:
             validate_password(value)
         return value
-    
+
+    def validate_is_root_admin(self, value):
+        """Ensure only one root admin exists per tenant."""
+        if value:
+            tenant = self._resolve_tenant()
+            if tenant:
+                qs = TenantUser.objects.filter(tenant=tenant, is_root_admin=True)
+                if self.instance:
+                    qs = qs.exclude(pk=self.instance.pk)
+                if qs.exists():
+                    raise serializers.ValidationError("A root admin already exists for this tenant.")
+        return value
+
     def create(self, validated_data):
         # Get tenant from context or infer from the authenticated request user.
         tenant = self._resolve_tenant()

@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime
 from django.db import models
+from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
@@ -297,6 +298,7 @@ class TenantUser(BaseModel):
     # Security
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    is_root_admin = models.BooleanField(default=False, db_index=True)
     last_login = models.DateTimeField(null=True, blank=True)
     last_login_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     password_changed_at = models.DateTimeField(auto_now_add=True)
@@ -331,6 +333,14 @@ class TenantUser(BaseModel):
             models.Index(fields=['tenant', 'email']),
             models.Index(fields=['tenant', 'role']),
             models.Index(fields=['tenant', 'employee_id']),
+            models.Index(fields=['tenant', 'is_root_admin']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant'],
+                condition=Q(is_root_admin=True),
+                name='unique_root_admin_per_tenant'
+            )
         ]
     
     def save(self, *args, **kwargs):
