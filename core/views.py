@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from django.utils import timezone
 from .models import (
     Country, State, LGA, FacilityType, Specialization,
@@ -13,6 +14,39 @@ from .serializers import (
     LanguageSerializer, SystemSettingSerializer, AuditLogSerializer
 )
 from .permissions import IsSystemAdmin
+
+
+class TenantScopedModelViewSet(viewsets.ModelViewSet):
+    """Base viewset that limits querysets to the current tenant."""
+
+    def get_queryset(self):
+        user = self.request.user
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+            return self.queryset.filter(tenant=tenant)
+        return self.queryset.none()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        user = self.request.user
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            context['tenant'] = user.tenant_user.tenant
+        return context
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        tenant = None
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        if not tenant:
+            raise PermissionDenied("Tenant context required.")
+        serializer.save(tenant=tenant)
+
+    def get_tenant(self):
+        user = self.request.user
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            return user.tenant_user.tenant
+        return None
 
 
 class CountryViewSet(viewsets.ModelViewSet):

@@ -154,7 +154,11 @@ class DutyRoster(BaseModel):
 
     def save(self, *args, **kwargs):
         if not self.roster_id:
-            self.roster_id = f"ROSTER{self.id or '0'}"
+            if self.id:
+                self.roster_id = f"ROSTER{self.id}"
+            else:
+                super().save(*args, **kwargs)
+                self.roster_id = f"ROSTER{self.id}"
         super().save(*args, **kwargs)
 
 
