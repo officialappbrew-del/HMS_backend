@@ -637,6 +637,7 @@ class AuthenticationView(APIView):
                             'username': user.username,
                             'email': user.email,
                             'role': user.role,
+                            'is_root_admin': user.is_root_admin,
                             'is_active': user.is_active,
                             'first_name': user.first_name,
                             'last_name': user.last_name,

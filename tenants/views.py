@@ -1623,7 +1623,7 @@ class TenantSettingViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(settings)
             return Response(serializer.data)
 
-        partial = request.method == 'PATCH'
+        partial = request.method in ['PATCH', 'PUT']
         serializer = self.get_serializer(settings, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         serializer.save()

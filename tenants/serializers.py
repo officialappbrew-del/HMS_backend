@@ -465,7 +465,7 @@ class TenantSettingSerializer(serializers.ModelSerializer):
     class Meta:
         model = TenantSetting
         fields = '__all__'
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'tenant']
     
     def validate_tax_rate(self, value):
         """Validate tax rate (0-100%)."""
