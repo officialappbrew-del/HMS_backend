@@ -22,7 +22,7 @@ class PatientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Patient
         fields = '__all__'
-        read_only_fields = ['registration_date', 'age', 'tenant']
+        read_only_fields = ['registration_date', 'age', 'tenant', 'registered_by']
         extra_kwargs = {
             'password': {'write_only': True}
         }
@@ -31,7 +31,9 @@ class PatientSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password', None)
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            validated_data['created_by'] = request.user
+            tenant_user = getattr(request.user, 'tenant_user', None)
+            if tenant_user is not None:
+                validated_data['registered_by'] = tenant_user
         patient = Patient.objects.create(**validated_data)
         if password:
             patient.set_password(password)
@@ -40,9 +42,6 @@ class PatientSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
-        request = self.context.get('request')
-        if request and request.user.is_authenticated:
-            validated_data['updated_by'] = request.user
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         if password:

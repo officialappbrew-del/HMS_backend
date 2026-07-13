@@ -342,3 +342,8 @@ python manage.py shell
 >>> Tenant.objects.filter(schema_name='public').exists()
 ```
 https://docs.google.com/spreadsheets/d/136c9OGjTuJ_Nd_EjAUtfyH7m5EXjVIvl/edit?gid=1573445100#gid=1573445100
+
+
+YrNWswCs3h5D
+
+NET-DOC-30E357
