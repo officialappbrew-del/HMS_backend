@@ -120,6 +120,7 @@ You can also create the tenant and its root admin in one request by including a 
 ```
 
 > Notes:
+>
 > - `country`, `facility_type`, and `subscription_plan` should match existing records in the database.
 > - `code` and `schema_name` are often generated automatically if omitted.
 > - For a first test, you can start with the minimal payload above.
@@ -214,6 +215,7 @@ POST /api/v1/tenants/users/
 ```
 
 ### Important login rule for all tenant users
+
 Each tenant user account should use a unique tenant-scoped identifier:
 
 - `employee_id` is the unique staff ID
@@ -306,6 +308,7 @@ Optional but commonly used fields:
 - `next_of_kin_phone`
 
 ### Patient login rule
+
 Each patient gets:
 
 - a unique `hospital_number` (auto-generated if you omit it)
@@ -338,4 +341,4 @@ python manage.py shell
 >>> from tenants.models import Tenant
 >>> Tenant.objects.filter(schema_name='public').exists()
 ```
-
+https://docs.google.com/spreadsheets/d/136c9OGjTuJ_Nd_EjAUtfyH7m5EXjVIvl/edit?gid=1573445100#gid=1573445100
