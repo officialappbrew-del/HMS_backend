@@ -11,9 +11,10 @@ from .serializers import (
     InstrumentMaintenanceSerializer
 )
 from core.permissions import IsDoctor, IsLabTechnician
+from core.views import TenantScopedModelViewSet
 
 
-class LabTestViewSet(viewsets.ModelViewSet):
+class LabTestViewSet(TenantScopedModelViewSet):
     queryset = LabTest.objects.all()
     serializer_class = LabTestSerializer
     permission_classes = [IsAuthenticated]
@@ -40,7 +41,7 @@ class LabTestViewSet(viewsets.ModelViewSet):
         return Response(categories)
 
 
-class LabOrderViewSet(viewsets.ModelViewSet):
+class LabOrderViewSet(TenantScopedModelViewSet):
     queryset = LabOrder.objects.all()
     serializer_class = LabOrderSerializer
     permission_classes = [IsAuthenticated]
@@ -51,17 +52,23 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
-        # Filter by patient
         patient_id = self.request.query_params.get('patient_id', None)
         if patient_id:
             queryset = queryset.filter(patient_id=patient_id)
         
-        # Filter by priority
         priority = self.request.query_params.get('priority', None)
         if priority:
             queryset = queryset.filter(priority=priority)
         
         return queryset
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        ordered_by = getattr(user, 'tenant_user', None) if hasattr(user, 'tenant_user') else None
+        if ordered_by:
+            serializer.save(ordered_by=ordered_by)
+        else:
+            serializer.save()
 
     @action(detail=True, methods=['post'])
     def collect_sample(self, request, pk=None):
@@ -69,7 +76,6 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         order.status = 'collected'
         order.collected_by = request.user
         order.collected_date = timezone.now()
-        # Generate accession number
         if not order.sample_accession_number:
             order.sample_accession_number = f"ACC-{timezone.now().strftime('%Y%m%d')}-{str(order.id).zfill(6)}"
         order.save()
@@ -104,8 +110,11 @@ class LabOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def stats(self, request):
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
         today = timezone.now().date()
-        today_orders = self.queryset.filter(ordered_date__date=today)
+        today_orders = LabOrder.objects.filter(tenant=tenant, ordered_date__date=today)
         
         stats = {
             'pending_samples': today_orders.filter(status='ordered').count(),
@@ -118,14 +127,16 @@ class LabOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def critical_results(self, request):
-        # Get orders with critical results
-        critical_orders = self.queryset.filter(
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        critical_orders = LabOrder.objects.filter(
+            tenant=tenant,
             results__is_critical=True
         ).distinct().prefetch_related('results', 'patient', 'test', 'ordered_by')
         
         critical_data = []
         for order in critical_orders:
-            # Get the latest critical result for each order
             latest_result = order.results.filter(is_critical=True).order_by('-created_at').first()
             if latest_result:
                 critical_data.append({
@@ -139,14 +150,20 @@ class LabOrderViewSet(viewsets.ModelViewSet):
                     'reference_range': latest_result.reference_range or order.test.reference_range,
                     'critical_since': latest_result.created_at.strftime('%Y-%m-%d %H:%M'),
                     'ordered_by': order.ordered_by.get_full_name() if order.ordered_by else 'N/A',
-                    'status': 'awaiting'  # Default status, can be updated
+                    'status': 'awaiting'
                 })
         
         return Response(critical_data)
 
     @action(detail=False, methods=['get'])
     def work_in_progress(self, request):
-        orders = self.queryset.filter(status__in=['collected', 'in_progress']).prefetch_related(
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        orders = LabOrder.objects.filter(
+            tenant=tenant,
+            status__in=['collected', 'in_progress']
+        ).prefetch_related(
             'patient', 'test', 'collected_by', 'performed_by'
         )[:100]
         
@@ -172,7 +189,6 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         return Response(work_data)
 
     def _calculate_tat(self, order):
-        """Calculate turnaround time"""
         if order.completed_date:
             delta = order.completed_date - order.ordered_date
             hours = delta.total_seconds() // 3600
@@ -184,7 +200,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         return 'Pending'
 
 
-class LabResultViewSet(viewsets.ModelViewSet):
+class LabResultViewSet(TenantScopedModelViewSet):
     queryset = LabResult.objects.all()
     permission_classes = [IsAuthenticated]
 
@@ -196,17 +212,14 @@ class LabResultViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         
-        # Filter by order
         order_id = self.request.query_params.get('order_id', None)
         if order_id:
             queryset = queryset.filter(order_id=order_id)
         
-        # Filter by critical
         critical_only = self.request.query_params.get('critical_only', None)
         if critical_only and critical_only.lower() == 'true':
             queryset = queryset.filter(is_critical=True)
         
-        # Filter by verified status
         verified = self.request.query_params.get('verified', None)
         if verified is not None:
             queryset = queryset.filter(is_verified=(verified.lower() == 'true'))
@@ -225,10 +238,7 @@ class LabResultViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def escalate(self, request, pk=None):
-        """Escalate a critical result"""
         result = self.get_object()
-        # In a real system, this would trigger notifications
-        # For now, we just mark it as escalated
         result.result_notes = f"[ESCALATED] {timezone.now()}: {request.data.get('notes', 'Escalated to supervisor')}"
         result.save()
         serializer = self.get_serializer(result)
@@ -236,15 +246,17 @@ class LabResultViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def critical(self, request):
-        """Get all critical results"""
-        critical = self.queryset.filter(is_critical=True).prefetch_related(
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        critical = LabResult.objects.filter(tenant=tenant, order__tenant=tenant, is_critical=True).prefetch_related(
             'order', 'order__patient', 'order__test'
         )
         serializer = self.get_serializer(critical, many=True)
         return Response(serializer.data)
 
 
-class NCDCReportViewSet(viewsets.ModelViewSet):
+class NCDCReportViewSet(TenantScopedModelViewSet):
     queryset = NCDCReport.objects.all()
     serializer_class = NCDCReportSerializer
     permission_classes = [IsAuthenticated]
@@ -252,12 +264,10 @@ class NCDCReportViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         
-        # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
-        # Filter by report type
         report_type = self.request.query_params.get('report_type', None)
         if report_type:
             queryset = queryset.filter(report_type=report_type)
@@ -266,12 +276,15 @@ class NCDCReportViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'])
     def submit(self, request):
-        """Submit a new NCDC report"""
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = NCDCReportSubmitSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
         data = serializer.validated_data
         report = NCDCReport.objects.create(
+            tenant=tenant,
             report_type=data['report_type'],
             case_count=data['case_count'],
             lga=data['lga'],
@@ -286,7 +299,6 @@ class NCDCReportViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def acknowledge(self, request, pk=None):
-        """Acknowledge a submitted report"""
         report = self.get_object()
         report.status = 'acknowledged'
         report.save()
@@ -295,13 +307,15 @@ class NCDCReportViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def pending(self, request):
-        """Get pending reports (draft status)"""
-        pending = self.queryset.filter(status='draft')
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        pending = NCDCReport.objects.filter(tenant=tenant, status='draft')
         serializer = self.get_serializer(pending, many=True)
         return Response(serializer.data)
 
 
-class InstrumentMaintenanceViewSet(viewsets.ModelViewSet):
+class InstrumentMaintenanceViewSet(TenantScopedModelViewSet):
     queryset = InstrumentMaintenance.objects.all()
     serializer_class = InstrumentMaintenanceSerializer
     permission_classes = [IsAuthenticated]
@@ -309,12 +323,10 @@ class InstrumentMaintenanceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         
-        # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
-        # Filter by instrument name
         instrument = self.request.query_params.get('instrument', None)
         if instrument:
             queryset = queryset.filter(instrument_name__icontains=instrument)
@@ -323,8 +335,11 @@ class InstrumentMaintenanceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def pending_maintenance(self, request):
-        """Get instruments with pending maintenance"""
-        pending = self.queryset.filter(
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        pending = InstrumentMaintenance.objects.filter(
+            tenant=tenant,
             status__in=['pending', 'in_progress'],
             scheduled_date__lte=timezone.now().date() + timezone.timedelta(days=7)
         ).order_by('scheduled_date')
@@ -333,7 +348,6 @@ class InstrumentMaintenanceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
-        """Mark maintenance as complete"""
         maintenance = self.get_object()
         maintenance.status = 'completed'
         maintenance.completed_date = timezone.now()
@@ -343,8 +357,10 @@ class InstrumentMaintenanceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'])
     def request(self, request):
-        """Create a new maintenance request"""
+        tenant = self.get_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(tenant=tenant)
         return Response(serializer.data, status=status.HTTP_201_CREATED)

@@ -18,6 +18,33 @@ from core.models import State, LGA, FacilityType, Specialization
 from core.serializers import StateSerializer, LGASerializer, FacilityTypeSerializer
 
 
+def _check_employee_id_globally_unique(employee_id, exclude_tenant=None):
+    """Return the tenant that already owns this employee_id, or None if it's globally unique."""
+    if not employee_id:
+        return None
+
+    from django.db import connection
+
+    active_tenants = Tenant.objects.filter(
+        subscription_status__in=[
+            Tenant.SubscriptionStatus.ACTIVE,
+            Tenant.SubscriptionStatus.TRIAL,
+        ]
+    )
+
+    for tenant in active_tenants:
+        if exclude_tenant and str(tenant.public_id) == str(exclude_tenant):
+            continue
+        connection.set_schema(tenant.schema_name)
+        try:
+            if TenantUser.objects.filter(employee_id=employee_id).exists():
+                return tenant
+        finally:
+            connection.set_schema('public')
+
+    return None
+
+
 class SubscriptionPlanSerializer(serializers.ModelSerializer):
     """Serializer for subscription plans."""
     class Meta:
@@ -286,6 +313,19 @@ class TenantUserSerializer(serializers.ModelSerializer):
         if tenant:
             if TenantUser.objects.filter(tenant=tenant, username=value).exists():
                 raise serializers.ValidationError("Username already exists in this tenant")
+        return value
+    
+    def validate_employee_id(self, value):
+        """Validate employee_id uniqueness across all tenants."""
+        if not value:
+            return value
+
+        tenant = self._resolve_tenant()
+        conflicting = _check_employee_id_globally_unique(value, exclude_tenant=tenant)
+        if conflicting:
+            raise serializers.ValidationError(
+                f"Employee ID '{value}' is already used in tenant '{conflicting.name}' ({conflicting.domain})."
+            )
         return value
     
     def validate_password(self, value):

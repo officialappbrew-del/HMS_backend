@@ -6,7 +6,7 @@ from .views import (
     RSAKeyViewSet, UserSessionViewSet, SecurityEventViewSet,
     UserNotificationViewSet, TwoFASetupView, BackupCodeView,
     PasswordResetRequestView, PasswordResetConfirmView,
-    tenant_aware_token_refresh
+    tenant_aware_token_refresh, logout_view
 )
 
 router = DefaultRouter()
@@ -23,6 +23,7 @@ urlpatterns = [
     path('password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('verify-2fa/', TwoFAView.as_view(), name='verify-2fa'),
     path('token/refresh/', tenant_aware_token_refresh, name='token_refresh'),
+    path('logout/', logout_view, name='logout'),
     
     # 2FA setup endpoints
     path('two-factor/setup/', TwoFASetupView.as_view(), name='two-factor-setup'),

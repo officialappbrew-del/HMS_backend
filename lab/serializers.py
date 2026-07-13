@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
+from django.utils import timezone
 from .models import LabTest, LabOrder, LabResult, NCDCReport, InstrumentMaintenance
 
 
@@ -9,6 +11,7 @@ class LabTestSerializer(serializers.ModelSerializer):
 
 
 class LabOrderSerializer(serializers.ModelSerializer):
+    tenant = serializers.PrimaryKeyRelatedField(read_only=True)
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     test_name = serializers.CharField(source='test.name', read_only=True)
     ordered_by_name = serializers.CharField(source='ordered_by.get_full_name', read_only=True)
@@ -16,6 +19,40 @@ class LabOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = LabOrder
         fields = '__all__'
+
+    def validate(self, attrs):
+        test = attrs.get('test')
+        raw_test = self.initial_data.get('test')
+
+        if test is None and raw_test is not None:
+            if isinstance(raw_test, int) or (isinstance(raw_test, str) and raw_test.isdigit()):
+                try:
+                    attrs['test'] = LabTest.objects.get(pk=int(raw_test))
+                except LabTest.DoesNotExist:
+                    pass
+            if attrs.get('test') is None and isinstance(raw_test, str):
+                attrs['test'] = LabTest.objects.filter(code__iexact=raw_test).first() or LabTest.objects.filter(name__iexact=raw_test).first()
+
+        if attrs.get('test') is None:
+            raise ValidationError({'test': 'A valid test id, code, or name is required.'})
+
+        return attrs
+
+    def create(self, validated_data):
+        visit = validated_data.get('visit')
+        if not validated_data.get('patient') and visit is not None:
+            validated_data['patient'] = visit.patient
+
+        if not validated_data.get('patient'):
+            raise ValidationError({'patient': 'Patient is required or must be inferred from visit.'})
+
+        if not validated_data.get('order_number'):
+            validated_data['order_number'] = self._generate_order_number()
+
+        return super().create(validated_data)
+
+    def _generate_order_number(self):
+        return f"LO-{timezone.now().strftime('%Y%m%d%H%M%S%f')}"
 
 
 class LabResultSerializer(serializers.ModelSerializer):

@@ -4,7 +4,7 @@ from rest_framework import permissions, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from clinical.views import TenantScopedModelViewSet
+from core.views import TenantScopedModelViewSet
 from .models import ConsentRecord, DataSubjectRequest, DataBreach, NDPRAuditLog, ComplianceReport
 from .serializers import (
     ConsentRecordSerializer,

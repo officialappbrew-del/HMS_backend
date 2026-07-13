@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+import re
 
 from .models import (
     Patient, PatientVisit, PatientDocument,
@@ -17,7 +18,7 @@ class PatientSerializer(serializers.ModelSerializer):
     hospital_number = serializers.CharField(required=False, allow_blank=True)
     login_id = serializers.CharField(required=False, allow_blank=True)
     tenant = serializers.PrimaryKeyRelatedField(read_only=True)
-    
+
     class Meta:
         model = Patient
         fields = '__all__'
@@ -25,9 +26,12 @@ class PatientSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'password': {'write_only': True}
         }
-    
+
     def create(self, validated_data):
         password = validated_data.pop('password', None)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
         patient = Patient.objects.create(**validated_data)
         if password:
             patient.set_password(password)
@@ -36,18 +40,31 @@ class PatientSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            validated_data['updated_by'] = request.user
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         if password:
             instance.set_password(password)
         instance.save()
         return instance
-    
+
     def get_full_name(self, obj):
         return obj.get_full_name()
-    
+
     def get_age_display(self, obj):
         return obj.get_age_display()
+
+    def validate_email(self, value):
+        if value and not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', value):
+            raise serializers.ValidationError("Invalid email format")
+        return value
+
+    def validate_date_of_birth(self, value):
+        if value and value > timezone.now().date():
+            raise serializers.ValidationError("Date of birth cannot be in the future")
+        return value
 
 
 class PatientLoginSerializer(serializers.Serializer):
@@ -89,12 +106,12 @@ class PatientVisitSerializer(serializers.ModelSerializer):
     nurse_name = serializers.CharField(source='nurse.get_full_name', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)
     waiting_time = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = PatientVisit
         fields = '__all__'
         read_only_fields = ['visit_number', 'checkin_time']
-    
+
     def get_waiting_time(self, obj):
         waiting = obj.get_waiting_time()
         if waiting:
@@ -108,20 +125,20 @@ class PatientDocumentSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
     file_size_display = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = PatientDocument
         fields = '__all__'
         read_only_fields = ['file_name', 'file_size', 'file_type', 'upload_date']
-    
+
     def get_file_size_display(self, obj):
-        if obj.file_size:
-            if obj.file_size < 1024:
-                return f"{obj.file_size} B"
-            elif obj.file_size < 1024 * 1024:
-                return f"{obj.file_size / 1024:.1f} KB"
-            else:
-                return f"{obj.file_size / (1024 * 1024):.1f} MB"
+        file_size = obj.file_size
+        if file_size < 1024:
+            return f"{file_size} B"
+        elif file_size < 1024 * 1024:
+            return f"{file_size / 1024:.1f} KB"
+        else:
+            return f"{file_size / (1024 * 1024):.1f} MB"
         return None
 
 
@@ -129,7 +146,7 @@ class PatientAllergySerializer(serializers.ModelSerializer):
     """Serializer for PatientAllergy model."""
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     verified_by_name = serializers.CharField(source='verified_by.get_full_name', read_only=True)
-    
+
     class Meta:
         model = PatientAllergy
         fields = '__all__'
@@ -139,7 +156,7 @@ class PatientMedicationSerializer(serializers.ModelSerializer):
     """Serializer for PatientMedication model."""
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     prescribed_by_name = serializers.CharField(source='prescribed_by.get_full_name', read_only=True)
-    
+
     class Meta:
         model = PatientMedication
         fields = '__all__'
@@ -150,19 +167,15 @@ class AppointmentSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     doctor_name = serializers.CharField(source='doctor.get_full_name', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)
-    is_past_due = serializers.SerializerMethodField()
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     updated_by_name = serializers.CharField(source='updated_by.get_full_name', read_only=True)
     patient_phone = serializers.CharField(source='patient.phone', read_only=True)
     patient_email = serializers.CharField(source='patient.email', read_only=True)
-    
+
     class Meta:
         model = Appointment
         fields = '__all__'
         read_only_fields = ['appointment_number', 'tenant']
-    
-    def get_is_past_due(self, obj):
-        return obj.is_past_due()
 
     def create(self, validated_data):
         request = self.context.get('request')
@@ -191,8 +204,7 @@ class PatientSearchSerializer(serializers.Serializer):
 class AppointmentScheduleSerializer(serializers.Serializer):
     """Serializer for scheduling appointments."""
     patient_id = serializers.IntegerField()
-    doctor_id = serializers.IntegerField()
-    department_id = serializers.IntegerField(required=False)
+    doctor_id = serializers.IntegerField(required=False)
     appointment_type = serializers.CharField()
     scheduled_date = serializers.DateField()
     scheduled_time = serializers.TimeField()

@@ -3,7 +3,8 @@ from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from clinical.views import TenantScopedModelViewSet, IsDoctorOrNurse
+from core.views import TenantScopedModelViewSet
+from core.permissions import IsDoctorOrNurse
 from .models import ClinicalAudit, QualityIndicator, PeerReview, MortalityReview, ComplianceScore
 from .serializers import (
     ClinicalAuditSerializer, QualityIndicatorSerializer,

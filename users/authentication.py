@@ -173,30 +173,32 @@ class JWTAuthentication(authentication.BaseAuthentication):
                 if tenant is None:
                     raise AuthenticationFailed('Tenant not found')
 
-                try:
-                    connection.set_schema(tenant.schema_name)
-                    user = None
+                user = None
 
-                    # First prefer the database id if the token stores one.
-                    if user_id is not None and str(user_id).isdigit():
-                        user = TenantUser.objects.filter(
-                            id=int(user_id),
-                            is_active=True,
-                        ).first()
+                # Prefer the database id if the token stores one.
+                if user_id is not None and str(user_id).isdigit():
+                    user = TenantUser.objects.filter(
+                        id=int(user_id),
+                        is_active=True,
+                    ).first()
 
-                    # Fall back to the tenant-scoped login identifiers.
-                    if user is None:
-                        user = TenantUser.objects.filter(
-                            employee_id=str(user_id),
-                            is_active=True,
-                        ).first()
-                    if user is None:
-                        user = TenantUser.objects.filter(
-                            username=str(user_id),
-                            is_active=True,
-                        ).first()
-                finally:
-                    connection.set_schema_to_public()
+                # Fall back to the tenant-scoped login identifiers.
+                if user is None:
+                    user_qs = TenantUser.objects.filter(
+                        employee_id=str(user_id),
+                        is_active=True,
+                    )
+                    if tenant:
+                        user_qs = user_qs.filter(tenant=tenant)
+                    user = user_qs.first()
+                if user is None:
+                    user_qs = TenantUser.objects.filter(
+                        username=str(user_id),
+                        is_active=True,
+                    )
+                    if tenant:
+                        user_qs = user_qs.filter(tenant=tenant)
+                    user = user_qs.first()
 
                 if not user:
                     raise AuthenticationFailed('User not found')

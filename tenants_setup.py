@@ -88,12 +88,13 @@ subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
 public_tenant, tenant_created = Tenant.objects.get_or_create(
     schema_name='public',
     defaults={
-        'name': 'Render',
+        'name': 'local',
+        # 'name': 'Render',
         'code': 'LOCAL',
-        'domain': 'hms-backend-l09g.onrender.com',
-        # 'domain': 'localhost',
-        'email': 'admin.app@onrender.com',
-        # 'email': 'admin.app@local.com',
+        # 'domain': 'hms-backend-l09g.onrender.com',
+        'domain': 'localhost',
+        # 'email': 'admin.app@onrender.com',
+        'email': 'admin.app@local.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
@@ -127,8 +128,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
 # Create the domain for the public tenant
 TenantDomain.objects.get_or_create(
     tenant=public_tenant,
-    domain='hms-backend-l09g.onrender.com',
-    # domain='localhost',
+    # domain='hms-backend-l09g.onrender.com',
+    domain='localhost',
     defaults={'is_primary': True},
 )
 
@@ -138,5 +139,5 @@ print(f'State: {state.name} ({state.code})')
 print(f'LGA: {lga.name}')
 print(f'Facility type: {facility_type.name}')
 print(f'Subscription plan: {subscription_plan.name}')
-print(f'Public tenant: {public_tenant.name} ({public_tenant.schema_name})')
-# print('Public domain: localhost')
+# print(f'Public tenant: {public_tenant.name} ({public_tenant.schema_name})')
+print('Public domain: localhost')

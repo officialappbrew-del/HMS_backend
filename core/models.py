@@ -192,20 +192,86 @@ class SystemSetting(models.Model):
 
 
 class AuditLog(models.Model):
-    """Audit log for all system activities."""
-    user = models.ForeignKey('users.GlobalUser', on_delete=models.SET_NULL, null=True, blank=True, db_index=True)
+    """Audit trail for all system activities and events.
+
+    Every field the activity UI surfaces is stored here: the raw
+    ``action`` / ``resource_type`` / ``resource_id``, the ``actor`` who
+    performed it, the ``severity`` and human ``title``, the source
+    ``ip_address``, and whether the entry is ``is_verified`` (written by
+    the server rather than client-supplied). New fields are nullable or
+    defaulted so the many existing ``AuditLog.objects.create(...)`` calls
+    across the codebase keep working unchanged.
+    """
+
+    class Severity(models.TextChoices):
+        INFO = 'info', _('Info')
+        WARNING = 'warning', _('Warning')
+        URGENT = 'urgent', _('Urgent')
+
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='audit_logs',
+        db_index=True,
+    )
+    user = models.ForeignKey(
+        'users.GlobalUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     action = models.CharField(max_length=50, db_index=True)
     resource_type = models.CharField(max_length=50, db_index=True)
     resource_id = models.CharField(max_length=50, db_index=True)
+    severity = models.CharField(
+        max_length=20,
+        choices=Severity.choices,
+        default=Severity.INFO,
+        db_index=True,
+    )
+    title = models.CharField(max_length=255, blank=True)
+    actor = models.CharField(max_length=255, blank=True)
     old_values = models.JSONField(null=True, blank=True)
     new_values = models.JSONField(null=True, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     user_agent = models.TextField(blank=True)
+    is_verified = models.BooleanField(default=True, db_index=True)
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
-    
+
     def __str__(self):
         return f"{self.action} - {self.resource_type} - {self.timestamp}"
-    
+
+    def _humanize_action(self):
+        """Return a (title, severity) pair derived from the raw action."""
+        action = (self.action or '').lower()
+        title = action.replace('_', ' ').title()
+        severity = self.Severity.INFO
+
+        if action.startswith(('delete', 'remove', 'deactivate', 'suspend', 'terminate')):
+            severity = self.Severity.URGENT
+        elif action.startswith(('warn', 'fail', 'error', 'expire', 'override', 'breach')):
+            severity = self.Severity.WARNING
+
+        return title, severity
+
+    def save(self, *args, **kwargs):
+        # Auto-populate derived fields unless explicitly provided, so both the
+        # new patient-audit writer and the legacy .create() calls stay valid.
+        if not self.title or not self.severity:
+            title, severity = self._humanize_action()
+            if not self.title:
+                self.title = title
+            if not self.severity:
+                self.severity = severity
+
+        if not self.actor:
+            self.actor = self.user.username if self.user else ''
+
+        super().save(*args, **kwargs)
+
     class Meta:
         verbose_name = _('Audit Log')
         verbose_name_plural = _('Audit Logs')
@@ -213,6 +279,7 @@ class AuditLog(models.Model):
         indexes = [
             models.Index(fields=['timestamp', 'action']),
             models.Index(fields=['resource_type', 'resource_id']),
+            models.Index(fields=['severity', 'timestamp']),
         ]
 
 

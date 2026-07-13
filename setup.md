@@ -5,7 +5,6 @@ Use this file as the only setup guide.
 ## 1) Install and run
 
 ```bash
-cd C:\Users\Ekene-onwon\Desktop\Codes\HosPManagement\HMS_backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt

@@ -1,6 +1,7 @@
 import csv
 import time
 import threading
+import logging
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
@@ -23,13 +24,35 @@ from .serializers import (
     BulkPatientUploadSerializer
 )
 from tenants.models import TenantUser
-from core.permissions import IsTenantAdmin, IsDoctor, IsNurse
+from core.views import TenantScopedModelViewSet
+from core.models import AuditLog
+
+logger = logging.getLogger(__name__)
+
+
+def _write_audit_log_async(payload):
+    """Background worker that persists an AuditLog row on its own DB connection.
+
+    Runs in a separate thread so it never blocks or interferes with the API
+    request. Failures are logged and swallowed.
+    """
+    from django.db import close_old_connections
+    close_old_connections()
+    try:
+        AuditLog.objects.create(**payload)
+    except Exception:
+        logger.exception(
+            'Failed to write patient audit log for action=%s',
+            payload.get('action') if isinstance(payload, dict) else 'unknown',
+        )
+    finally:
+        close_old_connections()
 
 
 class StandardPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
-    max_page_size = 100
+    max_page_size = 1000
 
 
 @api_view(['POST'])
@@ -59,7 +82,7 @@ def patient_login(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class PatientViewSet(viewsets.ModelViewSet):
+class PatientViewSet(TenantScopedModelViewSet):
     """ViewSet for managing patients."""
     queryset = Patient.objects.all()
     serializer_class = PatientSerializer
@@ -67,69 +90,260 @@ class PatientViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        user = self.request.user
+        queryset = super().get_queryset()
         
-        # Get tenant from user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-            
-            # Apply filters
-            queryset = Patient.objects.filter(tenant=tenant)
-            
-            # Search by various fields
-            search = self.request.query_params.get('search')
-            if search:
-                queryset = queryset.filter(
-                    Q(hospital_number__icontains=search) |
-                    Q(nhis_number__icontains=search) |
-                    Q(first_name__icontains=search) |
-                    Q(last_name__icontains=search) |
-                    Q(phone__icontains=search) |
-                    Q(email__icontains=search)
-                )
-            
-            # Filter by status
-            status_filter = self.request.query_params.get('status')
-            if status_filter:
-                queryset = queryset.filter(patient_status=status_filter)
-            
-            # Filter by gender
-            gender_filter = self.request.query_params.get('gender')
-            if gender_filter:
-                queryset = queryset.filter(gender=gender_filter)
-            
-            return queryset
-        
-        return Patient.objects.none()
-    
-    def perform_create(self, serializer):
-        user = self.request.user
-        tenant = None
-        
-        # Get tenant from tenant_user if available
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        
-        # Try to get tenant from request data
-        if not tenant:
-            tenant_id = self.request.data.get('tenant')
-            if tenant_id:
-                from tenants.models import Tenant
-                try:
-                    tenant = Tenant.objects.get(id=int(tenant_id))
-                except (Tenant.DoesNotExist, ValueError):
-                    pass
-        
-        if not tenant:
-            raise permissions.PermissionDenied("Tenant is required")
-        
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            serializer.save(
-                tenant=tenant,
-                registered_by=user.tenant_user
+        search = self.request.query_params.get('search')
+        if search:
+            search = search.strip()
+            filters = (
+                Q(hospital_number__icontains=search) |
+                Q(nhis_number__icontains=search) |
+                Q(nin__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(middle_name__icontains=search) |
+                Q(phone__icontains=search) |
+                Q(phone2__icontains=search) |
+                Q(email__icontains=search)
             )
+
+            # Full-name search, e.g. "John Smith" (in either order)
+            parts = search.split()
+            if len(parts) >= 2:
+                filters |= (Q(first_name__icontains=parts[0]) & Q(last_name__icontains=parts[-1]))
+                filters |= (Q(first_name__icontains=parts[-1]) & Q(last_name__icontains=parts[0]))
+
+            # Numeric primary key search (patient id)
+            if search.isdigit():
+                filters |= Q(id=int(search))
+
+            queryset = queryset.filter(filters)
+        
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            if status_filter.lower() == 'all':
+                pass
+            elif status_filter.lower() in ('inactive', 'archived'):
+                queryset = queryset.filter(patient_status__in=['inactive', 'archived'])
+            else:
+                queryset = queryset.filter(patient_status=status_filter)
         else:
-            serializer.save(tenant=tenant)
+            queryset = queryset.filter(is_active=True)
+        
+        gender_filter = self.request.query_params.get('gender')
+        if gender_filter:
+            queryset = queryset.filter(gender=gender_filter)
+        
+        state_filter = self.request.query_params.get('state')
+        if state_filter:
+            queryset = queryset.filter(state__iexact=state_filter)
+        
+        return queryset
+
+    # ===== Duplicate detection =====
+    def _find_duplicate(self, first_name, last_name, date_of_birth, exclude_id=None):
+        """Return an existing patient that matches the same name + date of birth
+        within the current tenant (case-insensitive), or None.
+
+        Used to prevent creating duplicate patient records.
+        """
+        from django.utils.dateparse import parse_date
+
+        if not (first_name and last_name and date_of_birth):
+            return None
+
+        if isinstance(date_of_birth, str):
+            dob = parse_date(date_of_birth)
+            if dob is None:
+                try:
+                    from datetime import datetime
+                    dob = datetime.strptime(date_of_birth, '%Y-%m-%d').date()
+                except (ValueError, TypeError):
+                    return None
+        else:
+            dob = date_of_birth
+
+        tenant = self.get_tenant()
+        if tenant is None:
+            return None
+
+        qs = Patient.objects.filter(
+            tenant=tenant,
+            first_name__iexact=str(first_name).strip(),
+            last_name__iexact=str(last_name).strip(),
+            date_of_birth=dob,
+        )
+        if exclude_id is not None:
+            qs = qs.exclude(id=exclude_id)
+        return qs.first()
+
+    def create(self, request, *args, **kwargs):
+        """Create a patient, blocking duplicate name + DOB records.
+
+        When a potential duplicate is detected the API responds with HTTP 409
+        and the existing patient's data so the client can warn the user and
+        offer an explicit override via ``confirm_duplicate``.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        if not request.data.get('confirm_duplicate'):
+            duplicate = self._find_duplicate(
+                serializer.validated_data.get('first_name'),
+                serializer.validated_data.get('last_name'),
+                serializer.validated_data.get('date_of_birth'),
+            )
+            if duplicate is not None:
+                existing = PatientSerializer(
+                    duplicate, context=self.get_serializer_context()
+                ).data
+                return Response(
+                    {
+                        'duplicate': True,
+                        'detail': (
+                            'A patient with the same name and date of birth already '
+                            'exists. Please verify before creating a duplicate record.'
+                        ),
+                        'existing_patient': existing,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            serializer.data, status=status.HTTP_201_CREATED, headers=headers
+        )
+
+    @action(detail=False, methods=['post'])
+    def check_duplicate(self, request):
+        """Lightweight duplicate lookup used by the registration form to warn
+        the user before they submit."""
+        data = request.data
+        duplicate = self._find_duplicate(
+            data.get('first_name'),
+            data.get('last_name'),
+            data.get('date_of_birth'),
+        )
+        if duplicate is None:
+            return Response({'duplicate': False})
+
+        existing = PatientSerializer(
+            duplicate, context=self.get_serializer_context()
+        ).data
+        return Response({'duplicate': True, 'existing_patient': existing})
+
+    # ===== Audit logging =====
+    def _get_client_ip(self):
+        request = self.request
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            return x_forwarded_for.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR')
+
+    def _resolve_global_user(self):
+        """AuditLog.user must be a GlobalUser. Resolve it from the request user,
+        which may be a TenantUser (with a global_user link) or a GlobalUser."""
+        from users.models import GlobalUser
+        user = getattr(self.request, 'user', None)
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return None
+        if isinstance(user, GlobalUser):
+            return user
+        # TenantUser has an optional OneToOne link to a GlobalUser.
+        return getattr(user, 'global_user', None)
+
+    def _write_audit_log(self, action_name, resource_id, old_values=None, new_values=None):
+        """Dispatch a tenant-scoped AuditLog write to a background thread.
+
+        This is fully non-blocking: the API request returns without waiting for
+        (and is never affected by) the audit insert. Only JSON-safe primitives
+        are handed to the worker so no request/ORM objects cross the thread.
+        """
+        try:
+            request = self.request
+            tenant = self.get_tenant()
+            global_user = self._resolve_global_user()
+            user = getattr(request, 'user', None)
+            actor = 'system'
+            if user is not None and getattr(user, 'is_authenticated', False):
+                name = ''
+                try:
+                    gfn = getattr(user, 'get_full_name', None)
+                    if callable(gfn):
+                        name = (gfn() or '').strip()
+                except Exception:
+                    name = ''
+                if not name:
+                    name = (getattr(user, 'username', None) or getattr(user, 'email', None) or '').strip()
+                if name:
+                    actor = name
+            payload = {
+                'tenant_id': getattr(tenant, 'id', None),
+                'user_id': getattr(global_user, 'id', None),
+                'actor': actor,
+                'action': action_name,
+                'resource_type': 'patient',
+                'resource_id': str(resource_id) if resource_id is not None else '',
+                'old_values': old_values,
+                'new_values': new_values,
+                'ip_address': self._get_client_ip(),
+                'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+            }
+            thread = threading.Thread(
+                target=_write_audit_log_async,
+                args=(payload,),
+                daemon=True,
+            )
+            thread.start()
+        except Exception:
+            # Dispatching must never interfere with the actual request.
+            logger.exception('Failed to dispatch patient audit log for action=%s', action_name)
+
+    def _serialize_for_audit(self, instance):
+        """Return a JSON-safe representation of a patient for the audit trail."""
+        try:
+            return PatientSerializer(instance, context=self.get_serializer_context()).data
+        except Exception:
+            logger.exception('Failed to serialize patient for audit log')
+            return None
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        instance = serializer.instance
+        self._write_audit_log(
+            'create_patient',
+            getattr(instance, 'id', None),
+            new_values=self._serialize_for_audit(instance),
+        )
+
+    def perform_update(self, serializer):
+        # Capture the current (pre-save) values before changes are applied.
+        old_values = None
+        if serializer.instance is not None:
+            old_values = self._serialize_for_audit(serializer.instance)
+
+        super().perform_update(serializer)
+
+        instance = serializer.instance
+        self._write_audit_log(
+            'update_patient',
+            getattr(instance, 'id', None),
+            old_values=old_values,
+            new_values=self._serialize_for_audit(instance),
+        )
+
+    def perform_destroy(self, instance):
+        resource_id = getattr(instance, 'id', None)
+        old_values = self._serialize_for_audit(instance)
+
+        super().perform_destroy(instance)
+
+        self._write_audit_log(
+            'delete_patient',
+            resource_id,
+            old_values=old_values,
+        )
     
     @action(detail=False, methods=['post'])
     def search(self, request):
@@ -144,12 +358,8 @@ class PatientViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
             
-            tenant = user.tenant_user.tenant
-            filters = Q(tenant=tenant)
-            
-            # Add search criteria
             data = serializer.validated_data
-            
+            filters = Q()
             if data.get('hospital_number'):
                 filters &= Q(hospital_number__icontains=data['hospital_number'])
             if data.get('nhis_number'):
@@ -165,7 +375,7 @@ class PatientViewSet(viewsets.ModelViewSet):
             if data.get('email'):
                 filters &= Q(email__icontains=data['email'])
             
-            patients = Patient.objects.filter(filters)
+            patients = self.get_queryset().filter(filters)
             page = self.paginate_queryset(patients)
             
             if page is not None:
@@ -177,6 +387,20 @@ class PatientViewSet(viewsets.ModelViewSet):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
+    def destroy(self, request, *args, **kwargs):
+        patient = self.get_object()
+        old_values = self._serialize_for_audit(patient)
+        patient.patient_status = 'inactive'
+        patient.is_active = False
+        patient.save(update_fields=['patient_status', 'is_active'])
+        self._write_audit_log(
+            'delete_patient',
+            getattr(patient, 'id', None),
+            old_values=old_values,
+            new_values=self._serialize_for_audit(patient),
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=True, methods=['get'])
     def visits(self, request, pk=None):
         """Get patient's visit history."""
@@ -276,39 +500,29 @@ class PatientViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-class PatientVisitViewSet(viewsets.ModelViewSet):
+class PatientVisitViewSet(TenantScopedModelViewSet):
     """ViewSet for managing patient visits."""
+    queryset = PatientVisit.objects.all()
     serializer_class = PatientVisitSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        user = self.request.user
+        queryset = super().get_queryset()
         
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-            
-            # Filter by visit status
-            status_filter = self.request.query_params.get('status')
-            if status_filter:
-                return PatientVisit.objects.filter(tenant=tenant, visit_status=status_filter)
-            
-            # Filter by date
-            date_filter = self.request.query_params.get('date')
-            if date_filter:
-                return PatientVisit.objects.filter(
-                    tenant=tenant,
-                    checkin_time__date=date_filter
-                )
-            
-            # Filter by doctor
-            doctor_filter = self.request.query_params.get('doctor_id')
-            if doctor_filter:
-                return PatientVisit.objects.filter(tenant=tenant, doctor_id=doctor_filter)
-            
-            return PatientVisit.objects.filter(tenant=tenant)
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(visit_status=status_filter)
         
-        return PatientVisit.objects.none()
+        date_filter = self.request.query_params.get('date')
+        if date_filter:
+            queryset = queryset.filter(checkin_time__date=date_filter)
+        
+        doctor_filter = self.request.query_params.get('doctor_id')
+        if doctor_filter:
+            queryset = queryset.filter(doctor_id=doctor_filter)
+        
+        return queryset
     
     @action(detail=True, methods=['post'])
     def triage(self, request, pk=None):
@@ -511,52 +725,34 @@ class PatientVisitViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class AppointmentViewSet(viewsets.ModelViewSet):
+class AppointmentViewSet(TenantScopedModelViewSet):
     """ViewSet for managing appointments."""
+    queryset = Appointment.objects.all()
     serializer_class = AppointmentSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        user = self.request.user
+        queryset = super().get_queryset()
         
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-            
-            # Filter by date range
-            start_date = self.request.query_params.get('start_date')
-            end_date = self.request.query_params.get('end_date')
-            
-            queryset = Appointment.objects.filter(tenant=tenant)
-            
-            if start_date and end_date:
-                queryset = queryset.filter(
-                    scheduled_date__gte=start_date,
-                    scheduled_date__lte=end_date
-                )
-            
-            # Filter by status
-            status_filter = self.request.query_params.get('status')
-            if status_filter:
-                queryset = queryset.filter(status=status_filter)
-            
-            # Filter by doctor
-            doctor_filter = self.request.query_params.get('doctor_id')
-            if doctor_filter:
-                queryset = queryset.filter(doctor_id=doctor_filter)
-            
-            return queryset.order_by('scheduled_date', 'scheduled_time')
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
         
-        return Appointment.objects.none()
-    
-    def perform_create(self, serializer):
-        user = self.request.user
-        tenant = None
-        if hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
-        if not tenant:
-            raise permissions.PermissionDenied("Tenant is required")
-        serializer.save(tenant=tenant)
+        if start_date and end_date:
+            queryset = queryset.filter(
+                scheduled_date__gte=start_date,
+                scheduled_date__lte=end_date
+            )
+        
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        doctor_filter = self.request.query_params.get('doctor_id')
+        if doctor_filter:
+            queryset = queryset.filter(doctor_id=doctor_filter)
+        
+        return queryset.order_by('scheduled_date', 'scheduled_time')
     
     @action(detail=False, methods=['post'])
     def schedule(self, request):
@@ -654,32 +850,11 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         })
 
 
-class BulkPatientUploadViewSet(viewsets.ModelViewSet):
+class BulkPatientUploadViewSet(TenantScopedModelViewSet):
     """ViewSet for tracking bulk patient uploads."""
+    queryset = BulkPatientUpload.objects.all()
     serializer_class = BulkPatientUploadSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        user = self.request.user
-        tenant = None
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        elif hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
-        if tenant:
-            return BulkPatientUpload.objects.filter(tenant=tenant)
-        return BulkPatientUpload.objects.none()
-
-    def perform_create(self, serializer):
-        user = self.request.user
-        tenant = None
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        elif hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
-        if not tenant:
-            raise serializers.ValidationError({'tenant': 'No tenant associated with your account.'})
-        serializer.save(tenant=tenant, uploaded_by=user.tenant_user if hasattr(user, 'tenant_user') else None, status='pending')
 
     @action(detail=False, methods=['post'], serializer_class=BulkPatientUploadSerializer)
     def upload(self, request):
@@ -688,18 +863,13 @@ class BulkPatientUploadViewSet(viewsets.ModelViewSet):
         if not file_obj:
             return Response({'error': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = request.user
-        tenant = None
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        elif hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
+        tenant = self.get_tenant()
         if not tenant:
             return Response({'error': 'No tenant associated with your account.'}, status=status.HTTP_400_BAD_REQUEST)
 
         upload = BulkPatientUpload.objects.create(
             tenant=tenant,
-            uploaded_by=user.tenant_user if hasattr(user, 'tenant_user') else None,
+            uploaded_by=request.user.tenant_user if hasattr(request.user, 'tenant_user') else None,
             file=file_obj,
             original_filename=file_obj.name,
             status='processing',
@@ -783,6 +953,18 @@ def _process_bulk_upload(upload_id):
 
                         if not validated_data['date_of_birth']:
                             raise ValueError('Date of birth is required.')
+
+                        existing = Patient.objects.filter(
+                            tenant=upload.tenant,
+                            first_name__iexact=validated_data['first_name'],
+                            last_name__iexact=validated_data['last_name'],
+                            date_of_birth=validated_data['date_of_birth'],
+                        ).first()
+                        if existing is not None:
+                            raise ValueError(
+                                'Duplicate patient: a record with the same name and '
+                                f'date of birth already exists (Hospital No: {existing.hospital_number}).'
+                            )
 
                         with transaction.atomic(using='default'):
                             Patient.objects.create(tenant=upload.tenant, **validated_data)

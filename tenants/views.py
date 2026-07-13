@@ -24,7 +24,8 @@ from .serializers import (
     TenantSerializer, SubscriptionPlanSerializer, TenantUserSerializer,
     DepartmentSerializer, TenantSettingSerializer, TenantModuleSerializer,
     TenantInvitationSerializer, AcceptInvitationSerializer,
-    TenantActivityLogSerializer, TenantBackupSerializer, TenantSummarySerializer
+    TenantActivityLogSerializer, TenantBackupSerializer, TenantSummarySerializer,
+    _check_employee_id_globally_unique
 )
 from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
 from core.models import AuditLog
@@ -408,6 +409,16 @@ class TenantViewSet(viewsets.ModelViewSet):
                 if TenantUser.objects.filter(tenant=tenant, email=root_admin_data['email']).exists():
                     raise serializers.ValidationError({'root_admin.email': ['A user with this email already exists for this tenant.']})
 
+                candidate_employee_id = root_admin_data.get('employee_id') or root_admin_data.get('user_id')
+                if candidate_employee_id:
+                    global_conflict = _check_employee_id_globally_unique(candidate_employee_id, exclude_tenant=tenant)
+                    if global_conflict:
+                        raise serializers.ValidationError({
+                            'root_admin.employee_id': [
+                                f"Employee ID '{candidate_employee_id}' is already used in tenant '{global_conflict.name}' ({global_conflict.domain})."
+                            ]
+                        })
+
                 admin_user = TenantUser.objects.create(
                     tenant=tenant,
                     username=unique_username,
@@ -416,7 +427,7 @@ class TenantViewSet(viewsets.ModelViewSet):
                     last_name=root_admin_data['last_name'],
                     phone=root_admin_data.get('phone', ''),
                     role='admin',
-                    employee_id=root_admin_data.get('employee_id') or None,
+                    employee_id=root_admin_data.get('employee_id') or root_admin_data.get('user_id') or None,
                     is_staff=True,
                     is_active=True,
                     is_root_admin=True,
@@ -872,18 +883,20 @@ def create_tenant_admin(request, tenant_id):
     # Employee ID handling
     employee_id = data.get('employee_id') or data.get('user_id') or None
     
-    # Check if employee_id exists (if provided)
-    if employee_id and TenantUser.objects.filter(tenant=tenant, employee_id=employee_id).exists():
-        return Response(
-            {
-                'error': 'Employee ID already exists.',
-                'code': 'DUPLICATE_EMPLOYEE_ID',
-                'details': f'The employee ID "{employee_id}" is already assigned to another user.',
-                'suggestion': 'Please use a different employee ID or leave it blank.'
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
+    # Check if employee_id exists globally across tenants
+    if employee_id:
+        conflicting = _check_employee_id_globally_unique(employee_id, exclude_tenant=tenant)
+        if conflicting:
+            return Response(
+                {
+                    'error': 'Employee ID already exists globally.',
+                    'code': 'DUPLICATE_EMPLOYEE_ID_GLOBAL',
+                    'details': f'The employee ID "{employee_id}" is already assigned to another tenant user.',
+                    'suggestion': 'Please use a different employee ID or leave it blank.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
     # Check if email exists
     if TenantUser.objects.filter(tenant=tenant, email=email).exists():
         return Response(
@@ -1045,16 +1058,18 @@ def create_tenant_root_admin(request, tenant_id):
         counter += 1
 
     employee_id = data.get('employee_id') or data.get('user_id') or None
-    if employee_id and TenantUser.objects.filter(tenant=tenant, employee_id=employee_id).exists():
-        return Response(
-            {
-                'error': 'Employee ID already exists.',
-                'code': 'DUPLICATE_EMPLOYEE_ID',
-                'details': f'The employee ID "{employee_id}" is already assigned to another user.',
-                'suggestion': 'Please use a different employee ID or leave it blank.'
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    if employee_id:
+        conflicting = _check_employee_id_globally_unique(employee_id, exclude_tenant=tenant)
+        if conflicting:
+            return Response(
+                {
+                    'error': 'Employee ID already exists globally.',
+                    'code': 'DUPLICATE_EMPLOYEE_ID_GLOBAL',
+                    'details': f'The employee ID "{employee_id}" is already assigned to another tenant user.',
+                    'suggestion': 'Please use a different employee ID or leave it blank.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     if TenantUser.objects.filter(tenant=tenant, email=email).exists():
         return Response(
@@ -1270,11 +1285,10 @@ class TenantUserViewSet(viewsets.ModelViewSet):
         if isinstance(user, TenantUser):
             return user
         return None
-    
+
     def get_queryset(self):
         user = self.request.user
 
-        # Global admins can view all tenant users.
         is_global_admin = bool(
             getattr(user, 'is_superuser', False)
             or getattr(user, 'role', None) in ['super_admin', 'system_admin']
@@ -1285,7 +1299,6 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                 return TenantUser.objects.filter(tenant_id=tenant_id)
             return TenantUser.objects.all()
 
-        # Tenant-scoped users should only see their own tenant's users.
         tenant = None
         if hasattr(user, 'tenant') and user.tenant:
             tenant = user.tenant
@@ -1307,15 +1320,34 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             if search:
                 return TenantUser.objects.filter(
                     tenant=tenant,
-                    # Q(username__icontains=search) |
-                    # Q(email__icontains=search) |
-                    # Q(first_name__icontains=search) |
-                    # Q(last_name__icontains=search)
                 )
 
             return TenantUser.objects.filter(tenant=tenant)
 
         return TenantUser.objects.none()
+    
+    def get_object(self):
+        obj = super().get_object()
+        user = self.request.user
+        is_global_admin = bool(
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'role', None) in ['super_admin', 'system_admin']
+        )
+        if not is_global_admin:
+            tenant = getattr(user, 'tenant_user', None)
+            if tenant:
+                tenant = tenant.tenant
+            if hasattr(user, 'tenant') and user.tenant:
+                tenant = user.tenant
+            elif getattr(user, 'tenant_public_id', None):
+                tenant = Tenant.objects.filter(public_id=user.tenant_public_id).first()
+            elif getattr(user, 'tenant_id', None):
+                tenant = Tenant.objects.filter(public_id=user.tenant_id).first()
+                if tenant is None and str(user.tenant_id).isdigit():
+                    tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
+            if tenant and getattr(obj, 'tenant_id', None) != tenant.pk:
+                raise permissions.PermissionDenied("You do not have permission to access this user.")
+        return obj
     
     def get_serializer_context(self):
         context = super().get_serializer_context()

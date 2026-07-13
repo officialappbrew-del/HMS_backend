@@ -5,43 +5,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import Drug, Supplier, Sale, SaleItem, Dispense
 from .serializers import DrugSerializer, SupplierSerializer, SaleSerializer, SaleCreateSerializer, DispenseSerializer
+from core.views import TenantScopedModelViewSet
 from core.permissions import IsPharmacist, IsPharmacistOrTenantAdmin
-
-
-class TenantScopedModelViewSet(viewsets.ModelViewSet):
-    """Base viewset that limits querysets to the current tenant."""
-
-    def get_queryset(self):
-        user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        elif hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
-        else:
-            return self.queryset.none()
-        return self.queryset.filter(tenant=tenant)
-
-    def perform_create(self, serializer):
-        user = self.request.user
-        tenant = None
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        elif hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
-        if not tenant:
-            tenant_id = self.request.data.get('tenant')
-            if tenant_id:
-                from tenants.models import Tenant
-                try:
-                    try:
-                        tenant = Tenant.objects.get(id=int(tenant_id))
-                    except ValueError:
-                        tenant = Tenant.objects.get(public_id=tenant_id)
-                except (Tenant.DoesNotExist, ValueError):
-                    pass
-        if not tenant:
-            raise permissions.PermissionDenied("Tenant context required.")
-        serializer.save(tenant=tenant)
 
 
 class DrugViewSet(TenantScopedModelViewSet):

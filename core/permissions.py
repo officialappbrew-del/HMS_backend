@@ -70,6 +70,20 @@ class IsPharmacistOrTenantAdmin(permissions.BasePermission):
         )
 
 
+class IsDoctorOrPharmacist(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and (
+            request.user.role == 'doctor' or request.user.role == 'pharmacist'
+        )
+
+
+class IsDoctorOrNurse(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and (
+            request.user.role == 'doctor' or request.user.role == 'nurse'
+        )
+
+
 class IsLabTechnician(permissions.BasePermission):
     """Check if user is a lab technician."""
     
@@ -89,6 +103,37 @@ class IsPatient(permissions.BasePermission):
     
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'patient'
+
+
+class IsAuditViewer(permissions.BasePermission):
+    """Allow viewing audit logs based on access level.
+
+    Granted to:
+      - superusers and global system/support/auditor roles
+      - tenant administrators (role ``admin``) and tenant root admins
+    Lower-privilege tenant roles (doctor, nurse, pharmacist, …) are denied.
+    """
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        role = getattr(user, 'role', None)
+        if role in ('system_admin', 'super_admin', 'auditor', 'support'):
+            return True
+
+        if (
+            role == 'admin'
+            or getattr(user, 'is_root_admin', False)
+            or getattr(user, 'is_global_admin', False)
+        ):
+            return True
+
+        return False
 
 
 class HasPermission(permissions.BasePermission):

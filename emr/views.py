@@ -3,7 +3,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
 
-from clinical.views import TenantScopedModelViewSet, IsDoctorOrNurse
+from core.views import TenantScopedModelViewSet
+from core.permissions import IsDoctorOrNurse
 from .models import MedicalRecord, ProgressNote, ClinicalDocument, ProblemList, Allergy
 from .serializers import (
     MedicalRecordSerializer, ProgressNoteSerializer,

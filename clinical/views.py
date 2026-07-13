@@ -5,54 +5,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import ConsultationNote, Prescription, VitalSign, EarlyWarningScore, VitalSignAlert
 from .serializers import ConsultationNoteSerializer, PrescriptionSerializer, VitalSignSerializer, EarlyWarningScoreSerializer, VitalSignAlertSerializer
-from core.permissions import IsDoctor, IsPharmacist, IsNurse
-
-
-class IsDoctorOrPharmacist(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and (
-            request.user.role == 'doctor' or request.user.role == 'pharmacist'
-        )
-
-
-class IsDoctorOrNurse(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and (
-            request.user.role == 'doctor' or request.user.role == 'nurse'
-        )
-
-
-class TenantScopedModelViewSet(viewsets.ModelViewSet):
-    """Base viewset that limits querysets to the current tenant."""
-
-    def get_queryset(self):
-        user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-            return self.queryset.filter(tenant=tenant)
-        return self.queryset.none()
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            context['tenant'] = user.tenant_user.tenant
-        return context
-
-    def perform_create(self, serializer):
-        user = self.request.user
-        tenant = None
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-        if not tenant:
-            raise permissions.PermissionDenied("Tenant context required.")
-        serializer.save(tenant=tenant)
-
-    def get_tenant(self):
-        user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            return user.tenant_user.tenant
-        return None
+from core.views import TenantScopedModelViewSet
+from core.permissions import IsDoctor, IsPharmacist, IsNurse, IsDoctorOrPharmacist, IsDoctorOrNurse
 
 
 class ConsultationNoteViewSet(TenantScopedModelViewSet):

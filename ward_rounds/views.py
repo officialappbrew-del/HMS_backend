@@ -7,7 +7,8 @@ from tenants.models import Tenant
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from clinical.views import TenantScopedModelViewSet, IsDoctorOrNurse
+from core.views import TenantScopedModelViewSet
+from core.permissions import IsDoctorOrNurse
 from patients.models import Patient
 from .models import WardRound, HandoverNote, GrandRound, Ward, Bed
 from .serializers import (

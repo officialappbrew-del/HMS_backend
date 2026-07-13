@@ -59,7 +59,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
-    'smartcare_hms.throttling.RateLimitMiddleware',
+    # 'smartcare_hms.throttling.RateLimitMiddleware',  # Throttling disabled
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -229,20 +229,18 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
-    'DEFAULT_THROTTLE_CLASSES': [
-        'smartcare_hms.throttling.UserAPIThrottle',
-        'smartcare_hms.throttling.AnonymousUserThrottle',
-    ],
-    'DEFAULT_THROTTLE_RATES': {
-        'api': '100/hour',
-        'anon': '50/hour',
-        'auth': '5/min',
-        'password_reset': '3/hour',
-        'password_reset_confirm': '5/hour',
-        'login_attempt': '5/15min',
-        '2fa': '5/15min',
-        'audit': '1000/hour',
-    }
+    'DEFAULT_THROTTLE_CLASSES': [],
+    # 'DEFAULT_THROTTLE_RATES': {
+    #     'api': '100/hour',
+    #     'anon': '50/hour',
+    #     'auth': '5/min',
+    #     'password_reset': '3/hour',
+    #     'password_reset_confirm': '5/hour',
+    #     'login_attempt': '5/15min',
+    #     '2fa': '5/15min',
+    #     'audit': '1000/hour',
+    # }
+    'DEFAULT_THROTTLE_RATES': {}
 }
 
 # JWT Settings

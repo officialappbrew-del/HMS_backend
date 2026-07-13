@@ -443,7 +443,6 @@ class AuthenticationView(APIView):
     throttle_classes = [AuthenticationThrottle]
     
     def post(self, request):
-        # Fix: Ensure request.data is a dictionary
         data = request.data
         if isinstance(data, str):
             try:
@@ -454,21 +453,17 @@ class AuthenticationView(APIView):
                     {'error': 'Invalid JSON data. Please check your request body.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        
-        # Tenant user login can now be done with only user_id + password.
+
+        tenant_domain = data.get('tenant_domain')
+        tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
+
+        if tenant_domain or tenant_id:
+            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id)
+
         if data.get('user_id') and data.get('password'):
             return self.authenticate_tenant_user_by_user_id(data, request)
 
-        # Check if tenant domain is provided in body or header
-        tenant_domain = data.get('tenant_domain')
-        tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
-        
-        if tenant_domain or tenant_id:
-            # Tenant user login
-            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id)
-        else:
-            # Global user login
-            return self.authenticate_global_user(data, request)
+        return self.authenticate_global_user(data, request)
     
     def authenticate_tenant_user(self, data, request, tenant_domain=None, tenant_id=None):
         """Authenticate tenant user."""
@@ -587,7 +582,7 @@ class AuthenticationView(APIView):
         """Authenticate a tenant user using only user_id + password."""
         from django.db import connection
 
-        user_id = data.get('user_id')
+        user_id = data.get('user_id') or data.get('username') or data.get('identifier')
         password = data.get('password')
 
         if not user_id or not password:
@@ -596,72 +591,145 @@ class AuthenticationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Search across tenants that are allowed to sign in.
-        for tenant in Tenant.objects.filter(
-            subscription_status__in=[
-                Tenant.SubscriptionStatus.ACTIVE,
-                Tenant.SubscriptionStatus.TRIAL,
-            ]
-        ):
+        tenant_domain = data.get('tenant_domain')
+        tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
+        tenant = None
+
+        if tenant_domain:
+            tenant = Tenant.objects.filter(domain=tenant_domain).first()
+        elif tenant_id:
+            tenant = Tenant.objects.filter(public_id=tenant_id).first()
+            if tenant is None and str(tenant_id).isdigit():
+                tenant = Tenant.objects.filter(id=int(tenant_id)).first()
+        else:
+            tenant = self._resolve_tenant_from_identifier(user_id)
+
+        if tenant:
             connection.set_schema(tenant.schema_name)
             try:
-                user = TenantUser.objects.filter(
-                    is_active=True,
-                    employee_id=user_id
-                ).first()
+                user = TenantUser.objects.filter(is_active=True, employee_id=user_id).first()
                 if not user:
-                    user = TenantUser.objects.filter(
-                        is_active=True,
-                        username=user_id
-                    ).first()
-
+                    user = TenantUser.objects.filter(is_active=True, username=user_id).first()
+                if not user:
+                    user = TenantUser.objects.filter(is_active=True, email=user_id).first()
                 if user and user.check_password(password):
-                    refresh = RefreshToken()
-                    refresh['user_id'] = user.id
-                    refresh['tenant_id'] = str(tenant.public_id)
-                    refresh['tenant_public_id'] = str(tenant.public_id)
-                    refresh['tenant_domain'] = tenant.domain
-                    refresh['is_tenant_user'] = True
-
-                    connection.set_schema('public')
-                    return Response({
-                        'message': 'Tenant admin login successful',
-                        'tenant': {
-                            'public_id': str(tenant.public_id),
-                            'name': tenant.name,
-                            'domain': tenant.domain,
-                        },
-                        'user': {
-                            'id': user.id,
-                            'user_id': user.employee_id or user.username,
-                            'username': user.username,
-                            'email': user.email,
-                            'role': user.role,
-                            'is_root_admin': user.is_root_admin,
-                            'is_active': user.is_active,
-                            'first_name': user.first_name,
-                            'last_name': user.last_name,
-                            'full_name': user.get_full_name(),
-                            'license_number': user.license_number,
-                            'mdcn_number': user.mdcn_number,
-                        },
-                        'tokens': {
-                            'access_token': str(refresh.access_token),
-                            'refresh_token': str(refresh),
-                        },
-                        'login_context': {
-                            'tenant_resolved_from': 'user_id',
-                            'tenant_scoped_identifier_used': user.employee_id or user.username,
-                        },
-                        'is_tenant_user': True,
-                    })
+                    return self._build_tenant_login_response(tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email')
             finally:
                 connection.set_schema('public')
+
+            return Response(
+                {'error': 'Invalid tenant credentials.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        active_tenants = list(
+            Tenant.objects.filter(
+                subscription_status__in=[
+                    Tenant.SubscriptionStatus.ACTIVE,
+                    Tenant.SubscriptionStatus.TRIAL,
+                ]
+            )
+        )
+
+        possible_matches = []
+
+        for tenant in active_tenants:
+            connection.set_schema(tenant.schema_name)
+            try:
+                user = TenantUser.objects.filter(is_active=True, employee_id=user_id).first()
+                if not user:
+                    user = TenantUser.objects.filter(is_active=True, username=user_id).first()
+                if not user:
+                    user = TenantUser.objects.filter(is_active=True, email=user_id).first()
+                if user and user.check_password(password):
+                    possible_matches.append((tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email'))
+            finally:
+                connection.set_schema('public')
+
+        if len(possible_matches) == 1:
+            matched_tenant, matched_user, matched_by = possible_matches[0]
+            return self._build_tenant_login_response(matched_tenant, matched_user, matched_by)
+
+        if len(possible_matches) > 1:
+            return Response(
+                {
+                    'error': 'Ambiguous login. This identifier matches multiple tenants.',
+                    'tenant_candidates': [
+                        {
+                            'public_id': str(t.public_id),
+                            'name': t.name,
+                            'domain': t.domain
+                        }
+                        for t, _, _ in possible_matches
+                    ],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
             {'error': 'Invalid user ID or password.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    def _resolve_tenant_from_identifier(self, user_id):
+        """Try to infer tenant from employee_id prefix (format: TENANT-ROLE-XXXX)."""
+        if not user_id or '-' not in str(user_id):
+            return None
+
+        parts = str(user_id).split('-', 1)
+        if len(parts) != 2:
+            return None
+
+        tenant_prefix = parts[0].upper()
+        if len(tenant_prefix) < 2:
+            return None
+
+        return Tenant.objects.filter(
+            subscription_status__in=[
+                Tenant.SubscriptionStatus.ACTIVE,
+                Tenant.SubscriptionStatus.TRIAL,
+            ]
+        ).filter(code__istartswith=tenant_prefix).first()
+
+    def _build_tenant_login_response(self, tenant, user, matched_by):
+        refresh = RefreshToken()
+        refresh['user_id'] = user.id
+        refresh['tenant_id'] = str(tenant.public_id)
+        refresh['tenant_public_id'] = str(tenant.public_id)
+        refresh['tenant_domain'] = tenant.domain
+        refresh['is_tenant_user'] = True
+
+        return Response({
+            'message': 'Tenant admin login successful',
+            'tenant': {
+                'public_id': str(tenant.public_id),
+                'name': tenant.name,
+                'domain': tenant.domain,
+            },
+            'user': {
+                'id': user.id,
+                'user_id': user.employee_id or user.username,
+                'username': user.username,
+                'email': user.email,
+                'role': user.role,
+                'is_root_admin': user.is_root_admin,
+                'is_active': user.is_active,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'full_name': user.get_full_name(),
+                'license_number': user.license_number,
+                'mdcn_number': user.mdcn_number,
+            },
+            'tokens': {
+                'access_token': str(refresh.access_token),
+                'refresh_token': str(refresh),
+            },
+            'login_context': {
+                'tenant_resolved_from': matched_by,
+                'tenant_scoped_identifier_used': user.employee_id or user.username,
+            },
+            'is_tenant_user': True,
+        })
 
     def authenticate_global_user(self, data, request):
         """Authenticate global user."""
@@ -1393,6 +1461,9 @@ class TenantAwareTokenRefreshSerializer(TokenRefreshSerializer):
         if is_tenant_user:
             access['full_name'] = user.get_full_name()
             access['username'] = user.username
+            access['tenant_public_id'] = refresh.get('tenant_public_id') or refresh.get('tenant_id')
+            access['tenant_id'] = refresh.get('tenant_id') or refresh.get('tenant_public_id')
+            access['tenant_domain'] = refresh.get('tenant_domain')
 
         return {
             'access': str(access),
@@ -1406,3 +1477,28 @@ def tenant_aware_token_refresh(request):
     serializer = TenantAwareTokenRefreshSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     return Response(serializer.validated_data)
+
+
+@api_view(['post'])
+@permission_classes([permissions.IsAuthenticated])
+def logout_view(request):
+    refresh_token = request.data.get('refresh')
+    user = request.user
+
+    if refresh_token:
+        try:
+            refresh = RefreshToken(refresh_token)
+            user_id = refresh.get('user_id')
+            if user_id and str(user_id) == str(getattr(user, 'id', '')):
+                UserSession.objects.filter(user=user, is_active=True).update(is_active=False)
+        except Exception:
+            pass
+
+    SecurityEvent.objects.create(
+        user=user,
+        event_type=SecurityEvent.EventType.LOGOUT,
+        ip_address=getattr(request, 'user_ip', None),
+        user_agent=request.META.get('HTTP_USER_AGENT', ''),
+    )
+
+    return Response({'detail': 'Logout successful'}, status=status.HTTP_200_OK)

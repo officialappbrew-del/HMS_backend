@@ -4,7 +4,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CountryViewSet, StateViewSet, LGAViewSet,
     FacilityTypeViewSet, SpecializationViewSet,
-    LanguageViewSet, SystemSettingViewSet, AuditLogViewSet
+    LanguageViewSet, SystemSettingViewSet, AuditLogViewSet,
+    DashboardInsightsViewSet
 )
 
 router = DefaultRouter()
@@ -16,6 +17,7 @@ router.register(r'specializations', SpecializationViewSet, basename='specializat
 router.register(r'languages', LanguageViewSet, basename='language')
 router.register(r'system-settings', SystemSettingViewSet, basename='system-setting')
 router.register(r'audit-logs', AuditLogViewSet, basename='audit-log')
+router.register(r'dashboard-insights', DashboardInsightsViewSet, basename='dashboard-insights')
 
 urlpatterns = [
     path('', include(router.urls)),
