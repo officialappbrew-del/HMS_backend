@@ -446,27 +446,27 @@ class TenantViewSet(viewsets.ModelViewSet):
                         'is_root_admin': True,
                     }
                 )
-            else:
-                admin_data = {
-                    'username': f"admin@{tenant.domain.split('.')[0]}",
-                    'email': tenant.email,
-                    'first_name': 'Admin',
-                    'last_name': tenant.name,
-                    'role': 'admin',
-                    'password': 'TempPass123!',
-                    'is_staff': True,
-                }
+            # else:
+            #     admin_data = {
+            #         'username': f"admin@{tenant.domain.split('.')[0]}",
+            #         'email': tenant.email,
+            #         'first_name': 'Admin',
+            #         'last_name': tenant.name,
+            #         'role': 'admin',
+            #         'password': 'TempPass123!',
+            #         'is_staff': True,
+            #     }
 
-                try:
-                    connection.set_schema(tenant.schema_name)
-                    admin_user = TenantUser.objects.create(
-                        tenant=tenant,
-                        **admin_data
-                    )
-                    admin_user.set_password(admin_data['password'])
-                    admin_user.save()
-                finally:
-                    connection.set_schema('public')
+            #     try:
+            #         connection.set_schema(tenant.schema_name)
+            #         admin_user = TenantUser.objects.create(
+            #             tenant=tenant,
+            #             **admin_data
+            #         )
+            #         admin_user.set_password(admin_data['password'])
+            #         admin_user.save()
+            #     finally:
+            #         connection.set_schema('public')
     
     def perform_update(self, serializer):
         old_tenant = self.get_object()
