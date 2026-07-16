@@ -536,15 +536,42 @@ class TenantInvitationSerializer(serializers.ModelSerializer):
     invited_by_name = serializers.CharField(source='invited_by.get_full_name', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)
     is_expired = serializers.BooleanField(read_only=True)
+    registration_link = serializers.SerializerMethodField()
     
     class Meta:
         model = TenantInvitation
         fields = '__all__'
         read_only_fields = [
-            'created_at', 'updated_at', 'token',
+            'created_at', 'updated_at', 'token', 'tenant', 'invited_by',
             'sent_at', 'accepted_at', 'status'
         ]
+        extra_kwargs = {
+            'tenant': {'required': False},
+            'invited_by': {'required': False},
+        }
     
+    def get_registration_link(self, obj):
+        request = self.context.get('request')
+
+        frontend_base_url = (
+            self.context.get('frontend_base_url') or
+            getattr(settings, 'FRONTEND_BASE_URL', None) or
+            getattr(settings, 'FRONTEND_URL', None)
+        )
+
+        if frontend_base_url:
+            base_url = frontend_base_url.rstrip('/') + '/invitation-signup'
+        elif request:
+            origin = request.headers.get('origin') or request.headers.get('referer')
+            if origin:
+                base_url = origin.rstrip('/') + '/invitation-signup'
+            else:
+                base_url = request.build_absolute_uri('/invitation-signup')
+        else:
+            base_url = 'http://localhost:5173/invitation-signup'
+
+        return f"{base_url}?token={obj.token}"
+
     def validate_email(self, value):
         """Validate email and check if already a user."""
         try:
@@ -573,21 +600,20 @@ class TenantInvitationSerializer(serializers.ModelSerializer):
 class AcceptInvitationSerializer(serializers.Serializer):
     """Serializer for accepting tenant invitations."""
     token = serializers.CharField(required=True)
-    username = serializers.CharField(required=True)
+    username = serializers.CharField(required=False, allow_blank=True)
     first_name = serializers.CharField(required=True)
     last_name = serializers.CharField(required=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    role = serializers.ChoiceField(required=False, choices=TenantUser.UserRole.choices)
     password = serializers.CharField(required=True, write_only=True)
     confirm_password = serializers.CharField(required=True, write_only=True)
     
     def validate(self, data):
-        # Check if passwords match
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError({"confirm_password": "Passwords do not match"})
         
-        # Validate password strength
         validate_password(data['password'])
         
-        # Check invitation
         token = data['token']
         try:
             invitation = TenantInvitation.objects.get(
@@ -601,18 +627,29 @@ class AcceptInvitationSerializer(serializers.Serializer):
             invitation.status = TenantInvitation.InvitationStatus.EXPIRED
             invitation.save()
             raise serializers.ValidationError({"token": "Invitation has expired"})
+
+        provided_email = data.get('email')
+        if provided_email and provided_email.lower() != invitation.email.lower():
+            raise serializers.ValidationError({
+                "email": f"This invitation was sent to {invitation.email}. You entered {provided_email}. Please use the invited email address or contact your administrator."
+            })
         
         data['invitation'] = invitation
         return data
     
     def save(self, **kwargs):
         invitation = self.validated_data['invitation']
+        first_name = self.validated_data.get('first_name', '')
+        last_name = self.validated_data.get('last_name', '')
+        email = self.validated_data.get('email') or invitation.email or ''
+        username = self.validated_data.get('username') or email.split('@')[0] or f"{first_name}.{last_name}".lower().replace(' ', '.')
         
-        # Create user from invitation
         user_data = {
-            'username': self.validated_data['username'],
-            'first_name': self.validated_data['first_name'],
-            'last_name': self.validated_data['last_name'],
+            'username': username,
+            'first_name': first_name,
+            'last_name': last_name,
+            'email': email,
+            'role': self.validated_data.get('role') or invitation.role,
             'password': self.validated_data['password'],
         }
         

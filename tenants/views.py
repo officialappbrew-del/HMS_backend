@@ -1288,6 +1288,7 @@ class TenantUserViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        include_pending = self.request.query_params.get('include_pending') == 'true'
 
         is_global_admin = bool(
             getattr(user, 'is_superuser', False)
@@ -1295,9 +1296,12 @@ class TenantUserViewSet(viewsets.ModelViewSet):
         )
         if is_global_admin:
             tenant_id = self.request.query_params.get('tenant_id')
-            if tenant_id:
-                return TenantUser.objects.filter(tenant_id=tenant_id)
-            return TenantUser.objects.all()
+            qs = TenantUser.objects.filter(tenant_id=tenant_id) if tenant_id else TenantUser.objects.all()
+            if self.action == 'list' and not include_pending:
+                qs = qs.exclude(created_by_invitation=True, is_active=False)
+            elif self.action == 'list' and include_pending:
+                qs = qs.filter(created_by_invitation=True, is_active=False)
+            return qs
 
         tenant = None
         if hasattr(user, 'tenant') and user.tenant:
@@ -1312,17 +1316,23 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                 tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
 
         if tenant:
+            qs = TenantUser.objects.filter(tenant=tenant)
+            if self.action == 'list' and not include_pending:
+                qs = qs.exclude(created_by_invitation=True, is_active=False)
+            elif self.action == 'list' and include_pending:
+                qs = qs.filter(created_by_invitation=True, is_active=False)
+
             role_filter = self.request.query_params.get('role')
             if role_filter:
-                return TenantUser.objects.filter(tenant=tenant, role=role_filter)
+                return qs.filter(role=role_filter)
 
             search = self.request.query_params.get('search')
             if search:
-                return TenantUser.objects.filter(
+                return qs.filter(
                     tenant=tenant,
                 )
 
-            return TenantUser.objects.filter(tenant=tenant)
+            return qs
 
         return TenantUser.objects.none()
     
@@ -1493,6 +1503,31 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                 'Root admin users must be created using the dedicated create-root-admin endpoint or during tenant creation.'
             )
         return super().create(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """Approve a pending tenant user so they can sign in."""
+        user = self.get_object()
+        if not self._can_edit_user(request.user, user):
+            return Response({'error': 'You can only manage users in your tenant.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if user.is_active:
+            return Response({'detail': 'User is already approved.'})
+
+        user.is_active = True
+        user.save(update_fields=['is_active'])
+        return Response({'detail': 'User approved successfully.'})
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        """Reject a pending tenant user and keep the account disabled."""
+        user = self.get_object()
+        if not self._can_edit_user(request.user, user):
+            return Response({'error': 'You can only manage users in your tenant.'}, status=status.HTTP_403_FORBIDDEN)
+
+        user.is_active = False
+        user.save(update_fields=['is_active'])
+        return Response({'detail': 'User rejected successfully.'})
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -1728,8 +1763,11 @@ class TenantInvitationViewSet(viewsets.ModelViewSet):
         user = self.request.user
         
         if hasattr(user, 'tenant_user') and user.tenant_user:
-            # Tenant user can see invitations for their tenant
-            return TenantInvitation.objects.filter(tenant=user.tenant_user.tenant)
+            qs = TenantInvitation.objects.filter(tenant=user.tenant_user.tenant)
+            include_accepted = self.request.query_params.get('include_accepted') == 'true'
+            if not include_accepted:
+                qs = qs.exclude(status=TenantInvitation.InvitationStatus.ACCEPTED)
+            return qs.order_by('archived', '-created_at')
         
         return TenantInvitation.objects.none()
     
@@ -1740,40 +1778,63 @@ class TenantInvitationViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if hasattr(user, 'tenant_user') and user.tenant_user:
             context['tenant'] = user.tenant_user.tenant
+
+        request_data = self.request.data if hasattr(self.request, 'data') else {}
+        frontend_base_url = None
+        if hasattr(request_data, 'get'):
+            frontend_base_url = request_data.get('frontend_base_url')
+
+        if not frontend_base_url:
+            frontend_base_url = (
+                self.request.headers.get('X-Frontend-Base-Url') or
+                self.request.headers.get('X-Frontend-URL') or
+                self.request.headers.get('Origin')
+            )
+
+        if frontend_base_url:
+            context['frontend_base_url'] = frontend_base_url
         
         return context
+    
+    def _ensure_admin_or_hr(self, user, invitation):
+        if not hasattr(user, 'tenant_user') or not user.tenant_user:
+            raise permissions.PermissionDenied("Only tenant admins and HR managers can manage invitations")
+        if user.tenant_user.role not in ['admin', 'hr_manager']:
+            raise permissions.PermissionDenied("Only admins and HR managers can manage invitations")
+        if invitation.tenant != user.tenant_user.tenant:
+            raise permissions.PermissionDenied("You can only manage invitations for your own tenant")
     
     def perform_create(self, serializer):
         user = self.request.user
         
         if hasattr(user, 'tenant_user') and user.tenant_user:
-            # Only admins and HR managers can send invitations
             if user.tenant_user.role not in ['admin', 'hr_manager']:
                 raise permissions.PermissionDenied("Only admins and HR managers can send invitations")
             
-            # Set invited_by and tenant
             serializer.save(
                 invited_by=user.tenant_user,
                 tenant=user.tenant_user.tenant
             )
     
+    def destroy(self, request, *args, **kwargs):
+        invitation = self.get_object()
+        self._ensure_admin_or_hr(request.user, invitation)
+        return super().destroy(request, *args, **kwargs)
+    
     @action(detail=True, methods=['post'])
     def resend(self, request, pk=None):
         """Resend an invitation."""
         invitation = self.get_object()
+        self._ensure_admin_or_hr(request.user, invitation)
         
-        # Check if invitation is pending
         if invitation.status != TenantInvitation.InvitationStatus.PENDING:
             return Response(
                 {'error': 'Cannot resend non-pending invitation'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Update expiry (extend by 7 days)
         invitation.expires_at = timezone.now() + timezone.timedelta(days=7)
         invitation.save()
-        
-        # TODO: Send email with invitation link
         
         return Response({'detail': 'Invitation resent'})
     
@@ -1781,11 +1842,31 @@ class TenantInvitationViewSet(viewsets.ModelViewSet):
     def revoke(self, request, pk=None):
         """Revoke an invitation."""
         invitation = self.get_object()
+        self._ensure_admin_or_hr(request.user, invitation)
         invitation.status = TenantInvitation.InvitationStatus.REVOKED
         invitation.save()
         
         return Response({'detail': 'Invitation revoked'})
-
+    
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        """Archive an invitation."""
+        invitation = self.get_object()
+        self._ensure_admin_or_hr(request.user, invitation)
+        invitation.archived = True
+        invitation.save()
+        
+        return Response({'detail': 'Invitation archived'})
+    
+    @action(detail=True, methods=['post'])
+    def unarchive(self, request, pk=None):
+        """Unarchive an invitation."""
+        invitation = self.get_object()
+        self._ensure_admin_or_hr(request.user, invitation)
+        invitation.archived = False
+        invitation.save()
+        
+        return Response({'detail': 'Invitation unarchived'})
 
 
 

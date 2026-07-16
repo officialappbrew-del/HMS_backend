@@ -6,7 +6,6 @@ from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 from django.conf import settings
-
 from django_tenants.models import TenantMixin, DomainMixin
 
 from core.models import BaseModel, Country, State, LGA, FacilityType
@@ -299,6 +298,7 @@ class TenantUser(BaseModel):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_root_admin = models.BooleanField(default=False, db_index=True)
+    created_by_invitation = models.BooleanField(default=False)
     last_login = models.DateTimeField(null=True, blank=True)
     last_login_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     password_changed_at = models.DateTimeField(auto_now_add=True)
@@ -539,6 +539,7 @@ class TenantInvitation(BaseModel):
         choices=InvitationStatus.choices,
         default=InvitationStatus.PENDING
     )
+    archived = models.BooleanField(default=False)
     sent_at = models.DateTimeField(auto_now_add=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField()
@@ -584,16 +585,18 @@ class TenantInvitation(BaseModel):
             self.save()
             raise ValueError("Invitation has expired")
         
-        # Create user
+        # Create user as pending approval so admins must activate it before login.
         user = TenantUser.objects.create(
             tenant=self.tenant,
-            email=self.email,
+            email=user_data.get('email', self.email),
             username=user_data.get('username', self.email.split('@')[0]),
             first_name=user_data.get('first_name', ''),
             last_name=user_data.get('last_name', ''),
-            role=self.role,
+            role=user_data.get('role', self.role),
             department=self.department,
-            is_active=True
+            is_active=False,
+            created_by_invitation=True,
+            phone=user_data.get('phone', '')
         )
         
         # Set password if provided

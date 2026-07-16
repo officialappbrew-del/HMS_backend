@@ -22,8 +22,8 @@ router.register(r'activity-logs', TenantActivityLogViewSet, basename='tenant-act
 router.register(r'backups', TenantBackupViewSet, basename='tenant-backup')
 
 urlpatterns = [
-    path('', include(router.urls)),
     path('invitations/accept/', AcceptInvitationView.as_view(), name='accept-invitation'),
+    path('', include(router.urls)),
     path('tenants/<uuid:tenant_id>/create-admin/', create_tenant_admin, name='create-tenant-admin'),
     path('tenants/<uuid:tenant_id>/create-root-admin/', create_tenant_root_admin, name='create-tenant-root-admin'),
     path('active-tenants/', PublicTenantListView.as_view(), name='public-tenant-list'),
