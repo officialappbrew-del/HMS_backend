@@ -155,7 +155,7 @@ class PatientViewSet(TenantScopedModelViewSet):
         return None
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related('tenant')
         
         search = self.request.query_params.get('search')
         if search:

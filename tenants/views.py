@@ -1322,6 +1322,9 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             elif self.action == 'list' and include_pending:
                 qs = qs.filter(created_by_invitation=True, is_active=False)
 
+            if self.action == 'list' and not self._is_request_root_admin():
+                qs = qs.exclude(is_root_admin=True)
+
             role_filter = self.request.query_params.get('role')
             if role_filter:
                 return qs.filter(role=role_filter)
@@ -1357,6 +1360,10 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                     tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
             if tenant and getattr(obj, 'tenant_id', None) != tenant.pk:
                 raise permissions.PermissionDenied("You do not have permission to access this user.")
+
+        if getattr(obj, 'is_root_admin', False) and not self._is_request_root_admin():
+            raise permissions.PermissionDenied("You do not have permission to access this user.")
+
         return obj
     
     def get_serializer_context(self):
