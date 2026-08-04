@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import MedicalRecord, ProgressNote, ClinicalDocument, ProblemList, Allergy
+from patients.models import Patient
 
 
 class MedicalRecordSerializer(serializers.ModelSerializer):
@@ -56,3 +57,17 @@ class AllergySerializer(serializers.ModelSerializer):
         model = Allergy
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at', 'tenant']
+
+
+class PatientEMRTimelineSerializer(serializers.Serializer):
+    patient_id = serializers.IntegerField(required=False)
+    timeline = serializers.ListField(child=serializers.DictField(), required=False)
+    alerts = serializers.ListField(child=serializers.DictField(), required=False)
+
+
+class PatientEMRAlertSerializer(serializers.Serializer):
+    patient_id = serializers.IntegerField(required=False)
+    allergies = serializers.ListField(child=serializers.DictField(), required=False)
+    dnr_order = serializers.BooleanField(required=False)
+    dnr_order_reason = serializers.CharField(required=False, allow_blank=True)
+    dnr_order_date = serializers.DateField(required=False, allow_null=True)

@@ -12,10 +12,16 @@ from tenants.models import Tenant
 
 class Patient(BaseModel):
     """Patient model for healthcare facilities."""
+    _tenant_mrn_counters = {}
+
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='patients')
     
     # Identification
     hospital_number = models.CharField(max_length=50, unique=True)
+    mrn = models.CharField(max_length=50, unique=True, db_index=True, blank=True, null=True, editable=False, verbose_name='Medical Record Number')
+    dnr_order = models.BooleanField(default=False, verbose_name='Do Not Resuscitate')
+    dnr_order_reason = models.TextField(blank=True)
+    dnr_order_date = models.DateField(null=True, blank=True)
     login_id = models.CharField(max_length=100, unique=True, null=True, blank=True, db_index=True)
     password = models.CharField(max_length=128, blank=True)
     nhis_number = models.CharField(max_length=50, blank=True, null=True)
@@ -47,7 +53,8 @@ class Patient(BaseModel):
     ])
     phone2 = models.CharField(max_length=15, blank=True)
     email = models.EmailField(blank=True)
-    address = models.TextField()
+    # address = models.TextField()
+    address = models.CharField(max_length=100, null=True, blank=True)
     city = models.CharField(max_length=100, null=True, blank=True)
     state = models.CharField(max_length=100, default='Rivers')
     lga = models.CharField(max_length=100, blank=True, verbose_name='Local Government Area')
@@ -67,7 +74,7 @@ class Patient(BaseModel):
         ('O+', 'O+'), ('O-', 'O-'),
         ('unknown', 'Unknown')
     ], default='unknown')
-    genotype = models.CharField(max_length=10, choices=[  # Changed from 5 to 10
+    genotype = models.CharField(max_length=10, null=True, blank=True, choices=[  # Changed from 5 to 10
         ('AA', 'AA'), ('AS', 'AS'), ('SS', 'SS'),
         ('AC', 'AC'), ('SC', 'SC'),
         ('unknown', 'Unknown')
@@ -91,6 +98,7 @@ class Patient(BaseModel):
     religion = models.CharField(max_length=100, blank=True)
     ethnicity = models.CharField(max_length=100, blank=True)
     language_spoken = models.CharField(max_length=200, default='English')
+    preferred_language = models.CharField(max_length=100, default='English', blank=True)
     
     # Status
     patient_status = models.CharField(max_length=20, choices=[
@@ -123,8 +131,12 @@ class Patient(BaseModel):
         ]
     
     def save(self, *args, **kwargs):
-        # Generate hospital number if not provided
+        if not self.mrn:
+            self.mrn = self.generate_mrn()
+
         if not self.hospital_number:
+            self.hospital_number = self.generate_hospital_number()
+        elif self._hospital_number_needs_refresh(self.hospital_number):
             self.hospital_number = self.generate_hospital_number()
 
         # Use hospital number as the default login identifier if needed.
@@ -141,15 +153,77 @@ class Patient(BaseModel):
         
         super().save(*args, **kwargs)
     
+    def _hospital_number_needs_refresh(self, hospital_number):
+        if hospital_number is None:
+            return True
+
+        hospital_value = str(hospital_number).strip()
+        if not hospital_value:
+            return True
+
+        tenant_code = self._get_tenant_code()
+        year_prefix = f"{tenant_code}-{timezone.now().year}-"
+        if not hospital_value.startswith(year_prefix):
+            return True
+
+        return hospital_value == str(self.mrn)
+
+    def _get_tenant_code(self):
+        tenant = getattr(self, 'tenant', None)
+        if tenant is not None:
+            code = getattr(tenant, 'code', None)
+            if code:
+                return str(code).strip().upper().replace(' ', '')
+
+        tenant_id = getattr(self, 'tenant_id', None)
+        if tenant_id is not None:
+            try:
+                tenant = Tenant.objects.get(pk=tenant_id)
+            except Exception:
+                tenant = None
+            if tenant is not None:
+                code = getattr(tenant, 'code', None)
+                if code:
+                    return str(code).strip().upper().replace(' ', '')
+
+        return 'GEN'
+
+    def generate_mrn(self):
+        """Generate a permanent tenant-scoped Medical Record Number (MRN)."""
+        from django.db.models import Max
+
+        tenant_id = getattr(self, 'tenant_id', None)
+        if tenant_id is None:
+            try:
+                tenant_id = self.tenant_id
+            except Exception:
+                tenant_id = None
+
+        tenant_code = self._get_tenant_code()
+        key = f'tenant:{tenant_id}' if tenant_id is not None else 'global'
+        queryset = Patient.objects.filter(tenant_id=tenant_id) if tenant_id is not None else Patient.objects.all()
+
+        last_mrn = queryset.exclude(mrn__isnull=True).aggregate(max_mrn=Max('mrn'))['max_mrn'] or f'{tenant_code}-{timezone.now().year}-100000'
+        candidate_counter = self.__class__._tenant_mrn_counters.get(key, last_mrn)
+
+        while True:
+            candidate_parts = str(candidate_counter).split('-')
+            candidate_num = int(candidate_parts[-1]) if len(candidate_parts) > 1 and candidate_parts[-1].isdigit() else 100000
+            candidate = f'{tenant_code}-{timezone.now().year}-{candidate_num + 1}'
+            self.__class__._tenant_mrn_counters[key] = candidate
+            if not queryset.filter(mrn=candidate).exists():
+                return candidate
+            candidate_counter = candidate
+
     def generate_hospital_number(self):
-        """Generate unique hospital number."""
-        import random
-        import string
-        
-        tenant_code = self.tenant.code[:3].upper()
+        """Generate a distinct tenant-scoped hospital identifier."""
+        if not self.mrn:
+            self.mrn = self.generate_mrn()
+
+        tenant_code = self._get_tenant_code()
         year = timezone.now().year
-        random_part = ''.join(random.choices(string.digits, k=6))
-        return f"{tenant_code}-{year}-{random_part}"
+        base_mrn = str(self.mrn).split('-')[-1]
+        return f"{tenant_code}-{year}-{int(base_mrn) + 1}"
     
     def set_password(self, raw_password):
         self.password = make_password(raw_password)

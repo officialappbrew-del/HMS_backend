@@ -8,7 +8,7 @@ from clinical.models import Prescription
 from patients.models import Patient, PatientVisit
 from pharmacy.models import Drug
 from tenants.models import Department, SubscriptionPlan, Tenant, TenantUser
-from .models import FacilityType, Specialization, Country, State, LGA
+from .models import FacilityType, Specialization, Country, State, LGA, AuditLog
 
 
 class DashboardInsightsViewTests(TestCase):
@@ -74,3 +74,33 @@ class DashboardInsightsViewTests(TestCase):
         self.assertIn('summary', response.data)
         self.assertGreaterEqual(len(response.data['alerts']), 1)
         self.assertGreaterEqual(len(response.data['tasks']), 1)
+
+    def test_audit_logs_are_returned_newest_first(self):
+        self.client.force_authenticate(user=self.global_user)
+
+        older = AuditLog.objects.create(
+            tenant=self.tenant,
+            user=self.global_user,
+            action='login',
+            resource_type='user',
+            resource_id='u-older',
+            title='Older login',
+            actor='Ada Jones',
+        )
+        newer = AuditLog.objects.create(
+            tenant=self.tenant,
+            user=self.global_user,
+            action='logout',
+            resource_type='user',
+            resource_id='u-newer',
+            title='Newer logout',
+            actor='Ada Jones',
+        )
+
+        response = self.client.get(reverse('audit-log-list'))
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item['id'] for item in response.data['results']]
+        self.assertIn(newer.id, ids)
+        self.assertIn(older.id, ids)
+        self.assertLess(ids.index(older.id), ids.index(newer.id))

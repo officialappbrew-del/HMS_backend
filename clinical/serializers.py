@@ -2,6 +2,18 @@ from rest_framework import serializers
 from .models import ConsultationNote, Prescription, VitalSign, EarlyWarningScore, VitalSignAlert
 
 
+class PrescriptionInteractionCheckSerializer(serializers.Serializer):
+    patient_id = serializers.IntegerField(required=False)
+    drug_names = serializers.ListField(child=serializers.CharField(), required=False)
+    prescription_ids = serializers.ListField(child=serializers.IntegerField(), required=False)
+
+
+class MedicationHistorySerializer(serializers.Serializer):
+    patient_id = serializers.IntegerField(required=False)
+    medications = serializers.ListField(child=serializers.DictField(), required=False)
+    warnings = serializers.ListField(child=serializers.DictField(), required=False)
+
+
 class ConsultationNoteSerializer(serializers.ModelSerializer):
     """Serializer for ConsultationNote model."""
     tenant = serializers.PrimaryKeyRelatedField(read_only=True)

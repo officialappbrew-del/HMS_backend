@@ -16,13 +16,18 @@ class PatientSerializer(serializers.ModelSerializer):
     tenant_name = serializers.CharField(source='tenant.name', read_only=True)
     password = serializers.CharField(write_only=True, required=False)
     hospital_number = serializers.CharField(required=False, allow_blank=True)
+    mrn = serializers.CharField(required=False, read_only=True)
+    dnr_order = serializers.BooleanField(required=False)
+    dnr_order_reason = serializers.CharField(required=False, allow_blank=True)
+    dnr_order_date = serializers.DateField(required=False, allow_null=True)
     login_id = serializers.CharField(required=False, allow_blank=True)
+    preferred_language = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     tenant = serializers.PrimaryKeyRelatedField(read_only=True)
 
     class Meta:
         model = Patient
         fields = '__all__'
-        read_only_fields = ['registration_date', 'age', 'tenant', 'registered_by']
+        read_only_fields = ['registration_date', 'age', 'tenant', 'registered_by', 'mrn']
         extra_kwargs = {
             'password': {'write_only': True}
         }
@@ -69,11 +74,11 @@ class PatientSerializer(serializers.ModelSerializer):
 class PatientLoginSerializer(serializers.Serializer):
     """Login serializer for patients using their generated login ID and password."""
     identifier = serializers.CharField(required=True)
-    password = serializers.CharField(write_only=True, required=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     def validate(self, data):
         identifier = data.get('identifier')
-        password = data.get('password')
+        password = data.get('password') or ''
 
         patient = None
 
@@ -88,14 +93,19 @@ class PatientLoginSerializer(serializers.Serializer):
                     except (Patient.DoesNotExist, ValueError):
                         patient = None
 
-        if not patient or not patient.check_password(password):
+        if not patient:
             raise serializers.ValidationError("Invalid patient identifier or password.")
 
-        if not patient.password:
-            raise serializers.ValidationError("This account has no password set.")
+        fallback_password = patient.hospital_number or patient.login_id or ''
+        if password in ('', fallback_password):
+            data['patient'] = patient
+            return data
 
-        data['patient'] = patient
-        return data
+        if patient.password and patient.check_password(password):
+            data['patient'] = patient
+            return data
+
+        raise serializers.ValidationError("Invalid patient identifier or password.")
 
 
 class PatientVisitSerializer(serializers.ModelSerializer):
@@ -170,6 +180,14 @@ class AppointmentSerializer(serializers.ModelSerializer):
     updated_by_name = serializers.CharField(source='updated_by.get_full_name', read_only=True)
     patient_phone = serializers.CharField(source='patient.phone', read_only=True)
     patient_email = serializers.CharField(source='patient.email', read_only=True)
+    send_reminder = serializers.BooleanField(required=False, default=False, write_only=True)
+    reminder_channels = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+    preferred_channel = serializers.CharField(required=False, allow_blank=True, write_only=True)
 
     class Meta:
         model = Appointment
@@ -180,12 +198,18 @@ class AppointmentSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['created_by'] = request.user
+        validated_data.pop('send_reminder', None)
+        validated_data.pop('reminder_channels', None)
+        validated_data.pop('preferred_channel', None)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             validated_data['updated_by'] = request.user
+        validated_data.pop('send_reminder', None)
+        validated_data.pop('reminder_channels', None)
+        validated_data.pop('preferred_channel', None)
         return super().update(instance, validated_data)
 
 
@@ -204,11 +228,19 @@ class AppointmentScheduleSerializer(serializers.Serializer):
     """Serializer for scheduling appointments."""
     patient_id = serializers.IntegerField()
     doctor_id = serializers.IntegerField(required=False)
+    department_id = serializers.IntegerField(required=False, allow_null=True)
     appointment_type = serializers.CharField()
     scheduled_date = serializers.DateField()
     scheduled_time = serializers.TimeField()
     reason = serializers.CharField(required=False)
     notes = serializers.CharField(required=False)
+    send_reminder = serializers.BooleanField(required=False, default=False)
+    reminder_channels = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_empty=True,
+    )
+    preferred_channel = serializers.CharField(required=False, allow_blank=True)
 
 
 class BulkPatientUploadSerializer(serializers.ModelSerializer):

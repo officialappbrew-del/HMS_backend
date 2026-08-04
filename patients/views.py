@@ -9,6 +9,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from django.conf import settings
+from django.core.mail import send_mail
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -55,6 +57,49 @@ class StandardPagination(PageNumberPagination):
     max_page_size = 1000
 
 
+def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel=None):
+    """Send a reminder to the patient using the available contact channels."""
+    patient = getattr(appointment, 'patient', None)
+    if patient is None:
+        return {'status': 'skipped', 'channels': []}
+
+    normalized_channels = []
+    if channels:
+        normalized_channels = [channel.lower() for channel in channels if channel]
+    if preferred_channel:
+        normalized_channels = [preferred_channel.lower()] + [channel for channel in normalized_channels if channel != preferred_channel.lower()]
+    if not normalized_channels:
+        normalized_channels = ['email'] if patient.email else ['sms']
+
+    sent_channels = []
+    reminder_message = (
+        f"Hello {patient.get_full_name()}, this is a reminder that you have an appointment on "
+        f"{appointment.scheduled_date} at {appointment.scheduled_time}."
+    )
+
+    if 'email' in normalized_channels and patient.email:
+        send_mail(
+            'Appointment Reminder',
+            reminder_message,
+            settings.DEFAULT_FROM_EMAIL,
+            [patient.email],
+            fail_silently=False,
+        )
+        sent_channels.append('email')
+
+    if ('sms' in normalized_channels or 'whatsapp' in normalized_channels) and patient.phone:
+        logger.info('Appointment reminder queued for patient %s via %s', patient.id, normalized_channels)
+        sent_channels.append('sms' if 'sms' in normalized_channels else 'whatsapp')
+
+    if sent_channels:
+        appointment.reminder_sent = True
+        appointment.reminder_sent_date = timezone.now()
+        appointment.save(update_fields=['reminder_sent', 'reminder_sent_date'])
+        return {'status': 'sent', 'channels': sent_channels}
+
+    return {'status': 'skipped', 'channels': []}
+
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def patient_login(request):
@@ -72,6 +117,7 @@ def patient_login(request):
                 'id': patient.id,
                 'login_id': patient.login_id,
                 'hospital_number': patient.hospital_number,
+                'mrn': patient.mrn,
                 'full_name': patient.get_full_name(),
                 'tenant': patient.tenant.name,
             },
@@ -89,6 +135,25 @@ class PatientViewSet(TenantScopedModelViewSet):
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
     
+    def _get_patient_from_request(self):
+        user = getattr(self.request, 'user', None)
+        if not getattr(user, 'is_authenticated', False):
+            return None
+
+        if isinstance(user, Patient):
+            return user
+
+        if getattr(user, 'is_patient', False) or getattr(user, 'role', None) == 'patient':
+            patient_id = getattr(user, 'patient_id', None) or getattr(user, 'id', None)
+            if patient_id is None:
+                return None
+            try:
+                return Patient.objects.get(pk=patient_id)
+            except Patient.DoesNotExist:
+                return None
+
+        return None
+
     def get_queryset(self):
         queryset = super().get_queryset()
         
@@ -97,6 +162,8 @@ class PatientViewSet(TenantScopedModelViewSet):
             search = search.strip()
             filters = (
                 Q(hospital_number__icontains=search) |
+                Q(mrn__icontains=search) |
+                Q(login_id__icontains=search) |
                 Q(nhis_number__icontains=search) |
                 Q(nin__icontains=search) |
                 Q(first_name__icontains=search) |
@@ -177,6 +244,17 @@ class PatientViewSet(TenantScopedModelViewSet):
             qs = qs.exclude(id=exclude_id)
         return qs.first()
 
+    def retrieve(self, request, *args, **kwargs):
+        """Log every patient file view as an immutable audit entry."""
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        self._write_audit_log(
+            'view_patient',
+            getattr(instance, 'id', None),
+            new_values=self._serialize_for_audit(instance),
+        )
+        return Response(serializer.data)
+
     def create(self, request, *args, **kwargs):
         """Create a patient, blocking duplicate name + DOB records.
 
@@ -232,6 +310,21 @@ class PatientViewSet(TenantScopedModelViewSet):
             duplicate, context=self.get_serializer_context()
         ).data
         return Response({'duplicate': True, 'existing_patient': existing})
+
+    @action(detail=True, methods=['post'])
+    def merge(self, request, pk=None):
+        """Merge incoming reception data into an existing patient record."""
+        duplicate = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        for field in ['first_name', 'last_name', 'phone', 'email', 'address', 'city', 'state', 'lga', 'country', 'blood_group', 'marital_status', 'religion', 'ethnicity', 'preferred_language', 'occupation', 'next_of_kin_name', 'next_of_kin_relationship', 'next_of_kin_phone', 'next_of_kin_address', 'nin', 'patient_status', 'is_active', 'genotype', 'has_insurance', 'insurance_company', 'insurance_policy_number', 'nhis_number', 'known_allergies', 'chronic_conditions', 'current_medications', 'surgical_history', 'family_history', 'notes']:
+            value = serializer.validated_data.get(field)
+            if value not in (None, ''):
+                setattr(duplicate, field, value)
+
+        duplicate.save()
+        return Response(PatientSerializer(duplicate, context=self.get_serializer_context()).data)
 
     # ===== Audit logging =====
     def _get_client_ip(self):
@@ -345,6 +438,64 @@ class PatientViewSet(TenantScopedModelViewSet):
             old_values=old_values,
         )
     
+    @action(detail=True, methods=['get'])
+    def audit_history(self, request, pk=None):
+        """Return the immutable audit timeline for one patient file."""
+        patient = self.get_object()
+        queryset = AuditLog.objects.filter(
+            resource_type='patient',
+            resource_id=str(patient.id),
+            tenant=self.get_tenant(),
+        ).order_by('-timestamp')
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = AuditLogSerializer(page, many=True, context=self.get_serializer_context())
+            return self.get_paginated_response(serializer.data)
+
+        serializer = AuditLogSerializer(queryset, many=True, context=self.get_serializer_context())
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def me(self, request):
+        """Return the authenticated patient profile for self-service access."""
+        patient = self._get_patient_from_request()
+        if patient is None:
+            return Response({'detail': 'Patient authentication required.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        serializer = self.get_serializer(patient)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def portal(self, request):
+        """Provide the authenticated patient with appointments, labs, and documents."""
+        patient = self._get_patient_from_request()
+        if patient is None:
+            return Response({'detail': 'Patient authentication required.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        from lab.models import LabOrder
+        from lab.serializers import LabOrderSerializer
+
+        appointments = patient.appointments.all().order_by('-scheduled_date', '-scheduled_time')
+        lab_orders = LabOrder.objects.filter(tenant=patient.tenant, patient=patient).select_related('test').prefetch_related('results').order_by('-ordered_date')
+        documents = patient.documents.all().order_by('-upload_date')
+
+        return Response({
+            'patient': PatientSerializer(patient, context=self.get_serializer_context()).data,
+            'appointments': AppointmentSerializer(appointments, many=True).data,
+            'lab_orders': LabOrderSerializer(lab_orders, many=True).data,
+            'documents': PatientDocumentSerializer(documents, many=True).data,
+            'notifications': [
+                {
+                    'id': 'welcome',
+                    'title': 'Welcome to your portal',
+                    'message': f'Hello {patient.get_full_name()}, you can review recent appointments, lab orders, and records here.',
+                    'read': True,
+                    'createdAt': timezone.now().isoformat(),
+                }
+            ],
+        })
+
     @action(detail=False, methods=['post'])
     def search(self, request):
         """Search for patients using multiple criteria."""
@@ -731,6 +882,21 @@ class AppointmentViewSet(TenantScopedModelViewSet):
     serializer_class = AppointmentSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        appointment = serializer.save()
+
+        if request.data.get('send_reminder', False):
+            _dispatch_appointment_reminder(
+                appointment,
+                channels=request.data.get('reminder_channels') or [],
+                preferred_channel=request.data.get('preferred_channel'),
+            )
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -786,13 +952,22 @@ class AppointmentViewSet(TenantScopedModelViewSet):
                 tenant=tenant,
                 patient=patient,
                 doctor=doctor,
-                department_id=data.get('department_id'),
+                department=data.get('department_id'),
                 appointment_type=data['appointment_type'],
                 scheduled_date=data['scheduled_date'],
                 scheduled_time=data['scheduled_time'],
                 reason=data.get('reason', ''),
                 notes=data.get('notes', '')
             )
+
+            if data.get('send_reminder', False):
+                reminder_channels = data.get('reminder_channels') or []
+                preferred_channel = data.get('preferred_channel')
+                _dispatch_appointment_reminder(
+                    appointment,
+                    channels=reminder_channels,
+                    preferred_channel=preferred_channel,
+                )
             
             serializer = AppointmentSerializer(appointment)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -805,8 +980,13 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         appointment = self.get_object()
         appointment.status = 'confirmed'
         appointment.save()
-        
-        # TODO: Send confirmation notification
+
+        if request.data.get('send_reminder', False):
+            _dispatch_appointment_reminder(
+                appointment,
+                channels=request.data.get('reminder_channels') or [],
+                preferred_channel=request.data.get('preferred_channel'),
+            )
         
         serializer = self.get_serializer(appointment)
         return Response(serializer.data)
@@ -823,6 +1003,20 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         serializer = self.get_serializer(appointment)
         return Response(serializer.data)
     
+    @action(detail=True, methods=['post'])
+    def send_reminder(self, request, pk=None):
+        """Send a reminder message for an appointment."""
+        appointment = self.get_object()
+        reminder_result = _dispatch_appointment_reminder(
+            appointment,
+            channels=request.data.get('reminder_channels') or [],
+            preferred_channel=request.data.get('preferred_channel'),
+        )
+        return Response({
+            'appointment': AppointmentSerializer(appointment).data,
+            'reminder': reminder_result,
+        })
+
     @action(detail=True, methods=['post'])
     def check_in(self, request, pk=None):
         """Check in for appointment."""
@@ -883,6 +1077,30 @@ class BulkPatientUploadViewSet(TenantScopedModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
+def _bool_val(value):
+    """Convert CSV truthy/falsy strings ('TRUE', 'FALSE', '1', '0', 'yes'...) to a Python bool."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    sval = str(value).strip().lower()
+    return sval in ('true', '1', 'yes', 'y', 't')
+
+
+def _parse_date_val(value):
+    """Parse a date string in common formats; return None for empty input."""
+    if not value or not str(value).strip():
+        return None
+    from datetime import datetime
+    dof = str(value).strip()
+    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'):
+        try:
+            return datetime.strptime(dof, fmt).date()
+        except Exception:
+            pass
+    raise ValueError(f'Invalid date format: {dof}')
+
+
 def _process_bulk_upload(upload_id):
     """Background processor for bulk patient uploads."""
     from django.db import transaction, close_old_connections
@@ -927,6 +1145,7 @@ def _process_bulk_upload(upload_id):
                         validated_data = {
                             'first_name': (row.get('first_name') or row.get('First Name') or '').strip(),
                             'last_name': (row.get('last_name') or row.get('Last Name') or '').strip(),
+                            'middle_name': (row.get('middle_name') or row.get('Middle Name') or '').strip(),
                             'date_of_birth': dob,
                             'gender': (row.get('gender') or row.get('Gender') or 'unknown').lower(),
                             'marital_status': (row.get('marital_status') or row.get('Marital Status') or 'single').lower(),
@@ -941,8 +1160,32 @@ def _process_bulk_upload(upload_id):
                             'blood_group': (row.get('blood_group') or row.get('Blood Group') or 'unknown').strip(),
                             'genotype': (row.get('genotype') or row.get('Genotype') or 'unknown').strip(),
                             'next_of_kin_name': (row.get('next_of_kin_name') or row.get('Next of Kin Name') or '').strip(),
+                            'next_of_kin_relationship': (row.get('next_of_kin_relationship') or row.get('Next of Kin Relationship') or '').strip(),
                             'next_of_kin_phone': (row.get('next_of_kin_phone') or row.get('Next of Kin Phone') or '').strip(),
                             'next_of_kin_address': (row.get('next_of_kin_address') or row.get('Next of Kin Address') or '').strip(),
+                            'known_allergies': (row.get('known_allergies') or row.get('Known Allergies') or '').strip(),
+                            'chronic_conditions': (row.get('chronic_conditions') or row.get('Chronic Conditions') or '').strip(),
+                            'current_medications': (row.get('current_medications') or row.get('Current Medications') or '').strip(),
+                            'surgical_history': (row.get('surgical_history') or row.get('Surgical History') or '').strip(),
+                            'family_history': (row.get('family_history') or row.get('Family History') or '').strip(),
+                            'has_insurance': _bool_val(row.get('has_insurance')),
+                            'insurance_company': (row.get('insurance_company') or row.get('Insurance Company') or '').strip(),
+                            'insurance_policy_number': (row.get('insurance_policy_number') or row.get('Insurance Policy Number') or '').strip(),
+                            'insurance_expiry': _parse_date_val(row.get('insurance_expiry')),
+                            'occupation': (row.get('occupation') or row.get('Occupation') or '').strip(),
+                            'religion': (row.get('religion') or row.get('Religion') or '').strip(),
+                            'ethnicity': (row.get('ethnicity') or row.get('Ethnicity') or '').strip(),
+                            'language_spoken': (row.get('language_spoken') or row.get('Language Spoken') or 'English').strip(),
+                            'preferred_language': (row.get('preferred_language') or row.get('Preferred Language') or '').strip() or 'English',
+                            'patient_status': (row.get('patient_status') or row.get('Patient Status') or 'active').lower(),
+                            'notes': (row.get('notes') or row.get('Notes') or '').strip(),
+                            'nhis_number': (row.get('nhis_number') or row.get('NHIS Number') or '').strip(),
+                            'nin': (row.get('nin') or row.get('NIN') or '').strip(),
+                            'dnr_order': _bool_val(row.get('dnr_order')),
+                            'dnr_order_reason': (row.get('dnr_order_reason') or row.get('DNR Order Reason') or '').strip(),
+                            'dnr_order_date': _parse_date_val(row.get('dnr_order_date')),
+                            'login_id': (row.get('login_id') or row.get('Login ID') or '').strip(),
+                            'password': (row.get('password') or row.get('Password') or '').strip() or None,
                         }
 
                         if not validated_data['first_name'] or not validated_data['last_name']:
@@ -967,7 +1210,12 @@ def _process_bulk_upload(upload_id):
                             )
 
                         with transaction.atomic(using='default'):
-                            Patient.objects.create(tenant=upload.tenant, **validated_data)
+                            _password = validated_data.pop('password', None)
+                            patient = Patient(tenant=upload.tenant, **validated_data)
+                            patient.save()
+                            if _password:
+                                patient.set_password(_password)
+                                patient.save(update_fields=['password'])
                         success_count += 1
                     except Exception as row_err:
                         failure_count += 1

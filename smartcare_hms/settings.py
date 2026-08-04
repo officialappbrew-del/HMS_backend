@@ -1,27 +1,106 @@
 """
 Django settings for SmartCare HMS project.
 """
+"""
+Django settings for SmartCare HMS project.
+"""
 import os
+import sys
+import importlib
+
+# ============================================
+# PATCH: Fix pkg_resources for Python 3.14+
+# ============================================
+try:
+    import pkg_resources
+except ModuleNotFoundError:
+    print("⚠️  pkg_resources not found, creating mock in settings...")
+    
+    class MockPkgResources:
+        @staticmethod
+        def get_distribution(name):
+            try:
+                import importlib.metadata
+                return importlib.metadata.distribution(name)
+            except:
+                return None
+        
+        @staticmethod
+        def require(name):
+            pass
+        
+        @staticmethod
+        def iter_entry_points(group, name=None):
+            try:
+                from importlib.metadata import entry_points
+                eps = entry_points().select(group=group)
+                if name:
+                    eps = eps.select(name=name)
+                return eps
+            except:
+                return []
+        
+        @staticmethod
+        def parse_version(version):
+            try:
+                from packaging.version import Version
+                return Version(version)
+            except:
+                return version
+    
+    mock_module = type('pkg_resources', (), {})()
+    for attr in dir(MockPkgResources):
+        if not attr.startswith('_'):
+            setattr(mock_module, attr, getattr(MockPkgResources, attr))
+    
+    sys.modules['pkg_resources'] = mock_module
+    
+    # Add exceptions
+    class DistributionNotFound(Exception):
+        pass
+    
+    class VersionConflict(Exception):
+        pass
+    
+    setattr(sys.modules['pkg_resources'], 'DistributionNotFound', DistributionNotFound)
+    setattr(sys.modules['pkg_resources'], 'VersionConflict', VersionConflict)
+    
+    print("✅ Created mock pkg_resources module in settings")
+
+# ============================================
+# Continue with normal settings
+# ============================================
 from pathlib import Path
 from datetime import timedelta
+from urllib.parse import urlparse
 import dj_database_url
 from decouple import config
+import os
+import sys
+import logging
 
 # Import logging configuration
 from .logging_config import setup_logging
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
+# ============================================
+# BASE DIRECTORY
+# ============================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# SECURITY WARNING: keep the secret key used in production secret!
+# ============================================
+# SECURITY
+# ============================================
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production')
-
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,admin.smartcarehms.local,lagosgeneral.smartcarehms.local,https://hms-backend-kmt1.onrender.com').split(',')
+# ============================================
+# ALLOWED HOSTS
+# ============================================
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,admin.smartcarehms.local,lagosgeneral.smartcarehms.local,hms-backend-kmt1.onrender.com').split(',')
 
-# Application definition
+# ============================================
+# APPLICATION DEFINITION
+# ============================================
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -53,8 +132,12 @@ INSTALLED_APPS = [
     'audit',
     'ward_rounds',
     'ndpr',
+    'integration',
 ]
 
+# ============================================
+# MIDDLEWARE
+# ============================================
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -75,6 +158,9 @@ MIDDLEWARE = [
     'smartcare_hms.logging_middleware.RequestResponseLoggingMiddleware',
 ]
 
+# ============================================
+# URLS & TEMPLATES
+# ============================================
 ROOT_URLCONF = 'smartcare_hms.urls'
 
 TEMPLATES = [
@@ -95,46 +181,127 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'smartcare_hms.wsgi.application'
 
-# Database
-# For local development with PostgreSQL, use these settings:
-# Make sure PostgreSQL is running (via docker-compose or local install)
-DATABASE_URL = config('DATABASE_URL', default='postgres://postgres:password@localhost:5432/smartcare_hms')
+# ============================================
+# DATABASE CONFIGURATION (Dynamic)
+# ============================================
+
+# Get the database mode from environment
+DATABASE_MODE = config('DATABASE_MODE', default='local')
+
+# Define database configurations
+DATABASE_CONFIGS = {
+    'local': {
+        'url_key': 'LOCAL_DATABASE_URL',
+        'password_key': 'LOCAL_DB_PASSWORD',
+        'ssl_mode': 'disable',
+        'label': 'Local PostgreSQL'
+    },
+    'render': {
+        'url_key': 'RENDER_DATABASE_URL',
+        'password_key': 'RENDER_DB_PASSWORD',
+        'ssl_mode': 'require',
+        'label': 'Render PostgreSQL'
+    },
+    'aws': {
+        'url_key': 'AWS_DATABASE_URL',
+        'password_key': 'AWS_DB_PASSWORD',
+        'ssl_mode': 'require',
+        'label': 'AWS RDS PostgreSQL'
+    },
+    'custom': {
+        'url_key': 'CUSTOM_DATABASE_URL',
+        'password_key': 'CUSTOM_DB_PASSWORD',
+        'ssl_mode': 'require',
+        'label': 'Custom PostgreSQL'
+    }
+}
+
+# Function to get database configuration
+def get_database_config(mode):
+    """Get database configuration for the specified mode"""
+    config_info = DATABASE_CONFIGS.get(mode, DATABASE_CONFIGS['local'])
+    
+    # Get the URL and password from environment
+    db_url = config(config_info['url_key'], default='')
+    db_password = config(config_info['password_key'], default='')
+    
+    # If URL is empty, fallback to local
+    if not db_url:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"⚠️  Database URL for '{mode}' not found. Falling back to local.")
+        config_info = DATABASE_CONFIGS['local']
+        db_url = config('LOCAL_DATABASE_URL', default='postgresql://postgres:pluralsight@localhost:5432/HMS_DB')
+        db_password = config('LOCAL_DB_PASSWORD', default='pluralsight')
+    
+    return {
+        'url': db_url,
+        'password': db_password,
+        'ssl_mode': config_info['ssl_mode'],
+        'label': config_info['label']
+    }
+
+# Get active database config
+active_db = get_database_config(DATABASE_MODE)
+DATABASE_URL = active_db['url']
+DB_PASSWORD = active_db['password']
+DB_SSL_MODE = active_db['ssl_mode']
 
 # Parse the database URL
-from urllib.parse import urlparse
 db_url = urlparse(DATABASE_URL)
 
+# Extract database components
+db_name = db_url.path[1:] if db_url.path else 'HMS_DB'
+db_user = db_url.username or 'postgres'
+db_host = db_url.hostname or 'localhost'
+db_port = db_url.port or 5432
+
+# Database configuration for django-tenants
 DATABASES = {
     'default': {
         'ENGINE': 'django_tenants.postgresql_backend',
-        'NAME': db_url.path[1:],  # Remove leading slash
-        'USER': db_url.username,
-        'PASSWORD': config('DB_PASSWORD', default='pluralsight'),
-        'HOST': db_url.hostname,
-        'PORT': db_url.port or 5432,
+        'NAME': db_name,
+        'USER': db_user,
+        'PASSWORD': db_url.password or DB_PASSWORD,
+        'HOST': db_host,
+        'PORT': db_port,
         'OPTIONS': {
-            'sslmode': 'require' if 'render.com' in db_url.hostname else 'disable',
+            'sslmode': DB_SSL_MODE,
+            'connect_timeout': 10,
         },
     }
 }
 
+# Display active database information
+logger = logging.getLogger(__name__)
+logger.info(f"""
+╔═══════════════════════════════════════════════════════════╗
+║  🗄️  ACTIVE DATABASE CONFIGURATION                       ║
+╠═══════════════════════════════════════════════════════════╣
+║  Mode:     {DATABASE_MODE.upper()}                                 ║
+║  Type:     {active_db['label']}                          ║
+║  Database: {db_name}                                     ║
+║  Host:     {db_host}                                     ║
+║  Port:     {db_port}                                     ║
+║  SSL:      {DB_SSL_MODE}                                 ║
+║  User:     {db_user}                                     ║
+╚═══════════════════════════════════════════════════════════╝
+""")
 
-
-# For PostgreSQL (uncomment when ready)
-# DATABASE_URL = config('DATABASE_URL', default='postgresql://hospital_ms_user:9VcytTw9HlVAID6PjaysFsCG6iroqTAw@dpg-d5uobgaqcgvc7391khrg-a.oregon-postgres.render.com/hospital_ms')
-# DATABASES = {
-#     'default': dj_database_url.parse(DATABASE_URL)
-# }
-
-# Custom user model
+# ============================================
+# CUSTOM USER MODEL
+# ============================================
 AUTH_USER_MODEL = 'users.GlobalUser'
 
-# Authentication backends
+# ============================================
+# AUTHENTICATION BACKENDS
+# ============================================
 AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
 ]
 
-# Password validation
+# ============================================
+# PASSWORD VALIDATION
+# ============================================
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -153,28 +320,30 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-# Internationalization
+# ============================================
+# INTERNATIONALIZATION
+# ============================================
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'Africa/Lagos'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images)
+# ============================================
+# STATIC & MEDIA FILES
+# ============================================
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
-# Use simpler storage in DEBUG mode to avoid warnings about missing staticfiles dir
 STATICFILES_STORAGE = 'whitenoise.storage.StaticFilesStorage' if DEBUG else 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS settings
-# Allow frontend origins to access the API
+# ============================================
+# CORS SETTINGS
+# ============================================
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
@@ -185,12 +354,21 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
-# Allow the custom tenant header and any other headers that browsers may request.
-# Using '*' avoids preflight failures for custom headers such as x-tenant-id.
 CORS_ALLOW_HEADERS = ['*']
 CORS_PREFLIGHT_MAX_AGE = 86400
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS = (
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT'
+)
 
-# CSRF settings (needed when frontend and backend are on different domains)
+# ============================================
+# CSRF SETTINGS
+# ============================================
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()
     for origin in config(
@@ -203,17 +381,9 @@ CSRF_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SAMESITE = 'None'
 CSRF_COOKIE_HTTPONLY = False
 
-CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_METHODS = (
-    'DELETE',
-    'GET',
-    'OPTIONS',
-    'PATCH',
-    'POST',
-    'PUT'
-)
-
-# REST Framework settings
+# ============================================
+# REST FRAMEWORK SETTINGS
+# ============================================
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'users.authentication.JWTAuthentication',
@@ -230,20 +400,12 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
     ],
     'DEFAULT_THROTTLE_CLASSES': [],
-    # 'DEFAULT_THROTTLE_RATES': {
-    #     'api': '100/hour',
-    #     'anon': '50/hour',
-    #     'auth': '5/min',
-    #     'password_reset': '3/hour',
-    #     'password_reset_confirm': '5/hour',
-    #     'login_attempt': '5/15min',
-    #     '2fa': '5/15min',
-    #     'audit': '1000/hour',
-    # }
     'DEFAULT_THROTTLE_RATES': {}
 }
 
-# JWT Settings
+# ============================================
+# JWT SETTINGS
+# ============================================
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
@@ -254,7 +416,9 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
-# Cache settings (using local memory cache for development)
+# ============================================
+# CACHE SETTINGS
+# ============================================
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
@@ -273,14 +437,18 @@ CACHES = {
 #     }
 # }
 
-# Session settings
-SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Changed for development
-SESSION_COOKIE_AGE = 3600  # 1 hour
+# ============================================
+# SESSION SETTINGS
+# ============================================
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+SESSION_COOKIE_AGE = 3600
 SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 
-# Security settings
+# ============================================
+# SECURITY SETTINGS
+# ============================================
 SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default='false', cast=bool)
 
 if not DEBUG:
@@ -288,11 +456,13 @@ if not DEBUG:
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = 'DENY'
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
-# Email settings - Send real emails in both development and production
+# ============================================
+# EMAIL SETTINGS
+# ============================================
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
 EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
@@ -304,13 +474,13 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@smartcarehms.local')
 SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 
-# Celery settings
+# ============================================
+# CELERY SETTINGS
+# ============================================
 if DEBUG:
-    # Development: Use synchronous task execution (no broker needed)
-    CELERY_TASK_ALWAYS_EAGER = True  # Execute tasks immediately instead of queueing
+    CELERY_TASK_ALWAYS_EAGER = True
     CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='memory://')
 else:
-    # Production: Use Redis or RabbitMQ
     CELERY_TASK_ALWAYS_EAGER = False
     CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 
@@ -321,13 +491,17 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
+CELERY_TASK_TIME_LIMIT = 30 * 60
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
-# Encryption key for sensitive data
+# ============================================
+# ENCRYPTION
+# ============================================
 ENCRYPTION_KEY = config('ENCRYPTION_KEY', default='your-32-char-key-for-encryption-change-this')
 
-# Swagger settings
+# ============================================
+# SWAGGER SETTINGS
+# ============================================
 SWAGGER_SETTINGS = {
     'SECURITY_DEFINITIONS': {
         'Bearer': {
@@ -339,43 +513,69 @@ SWAGGER_SETTINGS = {
     'USE_SESSION_AUTH': False,
 }
 
-# Logging
-# Disable Django's default logging configuration
+# ============================================
+# LOGGING
+# ============================================
 LOGGING_CONFIG = None
-
-# Enterprise-grade logging configuration
 setup_logging(BASE_DIR, debug=DEBUG)
 
-# File upload settings
-FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5 MB
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760  # 10 MB
+# ============================================
+# FILE UPLOAD SETTINGS
+# ============================================
+FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10485760
 
-# Application-specific settings
+# ============================================
+# APPLICATION-SPECIFIC SETTINGS
+# ============================================
 MAX_PATIENTS_PER_TENANT = 10000
 MAX_USERS_PER_TENANT = 100
 
-# Frontend URL for password reset links
+# ============================================
+# FRONTEND URL
+# ============================================
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
 
-# Integration keys (optional)
+# ============================================
+# INTEGRATION KEYS
+# ============================================
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
 FLUTTERWAVE_SECRET_KEY = config('FLUTTERWAVE_SECRET_KEY', default='')
 SMS_API_KEY = config('SMS_API_KEY', default='')
 
-# Create logs directory if it doesn't exist
+# ============================================
+# DIRECTORY CREATION
+# ============================================
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
-
-# Ensure media directory exists
 MEDIA_ROOT.mkdir(exist_ok=True)
 
-# Storage backend configuration (Supabase, S3, or local)
+# ============================================
+# STORAGE BACKEND
+# ============================================
 from .storage import *  # noqa: E402,F403
 
-
-# Multi-tenancy settings
+# ============================================
+# MULTI-TENANCY SETTINGS
+# ============================================
 TENANT_MODEL = "tenants.Tenant"
-TENANT_DOMAIN_MODEL = "tenants.TenantDomain"  # <-- fix here
+TENANT_DOMAIN_MODEL = "tenants.TenantDomain"
 PUBLIC_SCHEMA_NAME = 'public'
 PUBLIC_SCHEMA_URLCONF = 'smartcare_hms.urls_public'
 TENANT_SCHEMA_URLCONF = 'smartcare_hms.urls'
+
+# ============================================
+# PRINT DATABASE CONFIGURATION (For verification)
+# ============================================
+print(f"""
+╔═══════════════════════════════════════════════════════════╗
+║  🚀 SMARTCARE HMS - STARTUP COMPLETE                     ║
+╠═══════════════════════════════════════════════════════════╣
+║  Debug Mode:     {DEBUG}                                 ║
+║  Database Mode:  {DATABASE_MODE.upper()}                 ║
+║  Database:       {db_name}                               ║
+║  Host:           {db_host}:{db_port}                     ║
+║  SSL:            {DB_SSL_MODE}                           ║
+║  Frontend URL:   {FRONTEND_URL}                          ║
+╚═══════════════════════════════════════════════════════════╝
+""")

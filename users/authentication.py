@@ -13,6 +13,7 @@ from cryptography.exceptions import InvalidSignature
 
 from .models import UserSession, SecurityEvent, RSAKey
 from tenants.models import Tenant, TenantUser
+from patients.models import Patient
 
 
 class RSAAuthentication(authentication.BaseAuthentication):
@@ -154,8 +155,23 @@ class JWTAuthentication(authentication.BaseAuthentication):
             user_id = payload.get('user_id')
             session_id = payload.get('session_id')
 
-            if not user_id:
+            if not user_id and not payload.get('is_patient'):
                 raise AuthenticationFailed('Invalid token')
+
+            if payload.get('is_patient'):
+                patient_id = payload.get('patient_id') or user_id
+                if not patient_id:
+                    raise AuthenticationFailed('Invalid patient token')
+
+                try:
+                    patient = Patient.objects.get(id=patient_id, is_active=True)
+                except Patient.DoesNotExist:
+                    raise AuthenticationFailed('Patient not found')
+
+                patient.is_authenticated = True
+                patient.is_patient = True
+                patient.role = 'patient'
+                return (patient, payload)
 
             # Tenant user token path
             if payload.get('is_tenant_user'):

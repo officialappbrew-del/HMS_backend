@@ -1,6 +1,17 @@
 from rest_framework import permissions
 
 
+def _get_user_role(user):
+    if user is None:
+        return None
+
+    tenant_user = getattr(user, 'tenant_user', None)
+    if tenant_user is not None:
+        return getattr(tenant_user, 'role', None)
+
+    return getattr(user, 'role', None)
+
+
 class IsSystemAdmin(permissions.BasePermission):
     """Check if user is a system administrator."""
     
@@ -43,21 +54,24 @@ class IsDoctor(permissions.BasePermission):
     """Check if user is a doctor."""
     
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'doctor'
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(request.user.is_authenticated and role == 'doctor')
 
 
 class IsNurse(permissions.BasePermission):
     """Check if user is a nurse."""
     
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'nurse'
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(request.user.is_authenticated and role == 'nurse')
 
 
 class IsPharmacist(permissions.BasePermission):
     """Check if user is a pharmacist."""
     
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'pharmacist'
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(request.user.is_authenticated and role == 'pharmacist')
 
 
 class IsPharmacistOrTenantAdmin(permissions.BasePermission):
@@ -88,14 +102,40 @@ class IsLabTechnician(permissions.BasePermission):
     """Check if user is a lab technician."""
     
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'lab_technician'
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(request.user.is_authenticated and role == 'lab_tech')
 
 
 class IsReceptionist(permissions.BasePermission):
     """Check if user is a receptionist."""
     
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'receptionist'
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(request.user.is_authenticated and role == 'receptionist')
+
+
+class IsFinanceStaff(permissions.BasePermission):
+    """Allow access to financial and billing operations only for finance roles or admins."""
+
+    def has_permission(self, request, view):
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(
+            request.user.is_authenticated and role in {
+                'admin', 'tenant_admin', 'accountant', 'billing_officer', 'super_admin', 'system_admin'
+            }
+        )
+
+
+class IsClinicalStaff(permissions.BasePermission):
+    """Allow clinical workflows for staff who can manage care, but not receptionists."""
+
+    def has_permission(self, request, view):
+        role = _get_user_role(getattr(request, 'user', None))
+        return bool(
+            request.user.is_authenticated and role in {
+                'doctor', 'nurse', 'pharmacist', 'lab_tech', 'admin', 'tenant_admin', 'super_admin', 'system_admin'
+            }
+        )
 
 
 class IsPatient(permissions.BasePermission):

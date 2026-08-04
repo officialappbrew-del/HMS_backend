@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from core.views import TenantScopedModelViewSet
+from core.permissions import IsFinanceStaff
 from .models import Invoice, InvoiceItem, Payment, InsuranceClaim, BillingAuditLog
 from .serializers import (
     InvoiceSerializer,
@@ -15,17 +16,10 @@ from .serializers import (
 )
 
 
-class IsBillingStaff(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and getattr(request.user, 'role', None) in (
-            'admin', 'superadmin', 'billing_officer', 'accountant', 'receptionist'
-        )
-
-
 class InvoiceViewSet(TenantScopedModelViewSet):
     queryset = Invoice.objects.all()
     serializer_class = InvoiceSerializer
-    permission_classes = [IsBillingStaff]
+    permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -106,7 +100,7 @@ class InvoiceViewSet(TenantScopedModelViewSet):
 class PaymentViewSet(TenantScopedModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
-    permission_classes = [IsBillingStaff]
+    permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -138,7 +132,7 @@ class PaymentViewSet(TenantScopedModelViewSet):
 class InsuranceClaimViewSet(TenantScopedModelViewSet):
     queryset = InsuranceClaim.objects.all()
     serializer_class = InsuranceClaimSerializer
-    permission_classes = [IsBillingStaff]
+    permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -221,7 +215,7 @@ class InsuranceClaimViewSet(TenantScopedModelViewSet):
 class BillingAuditLogViewSet(TenantScopedModelViewSet):
     queryset = BillingAuditLog.objects.all()
     serializer_class = BillingAuditLogSerializer
-    permission_classes = [IsBillingStaff]
+    permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
         qs = super().get_queryset()

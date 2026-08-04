@@ -207,6 +207,7 @@ class OvertimeRecord(BaseModel):
     reason = models.TextField(blank=True)
     status = models.CharField(max_length=20, default='Pending')
     approved_by = models.CharField(max_length=200, blank=True)
+    approval_date = models.DateField(null=True, blank=True)
     rate = models.CharField(max_length=20, default='1.5x')
 
     class Meta:

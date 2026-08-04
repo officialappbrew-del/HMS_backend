@@ -32,6 +32,8 @@ class TenantScopedModelViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if hasattr(user, 'tenant_user') and user.tenant_user:
             return user.tenant_user.tenant
+        if hasattr(user, 'tenant') and user.tenant:
+            return user.tenant
         return None
 
     def get_queryset(self):
@@ -364,8 +366,14 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         user_id = self.request.query_params.get('user_id')
         if user_id:
             queryset = queryset.filter(user_id=user_id)
-        
-        return queryset
+
+        # Filter by patient/resource id for patient-specific audit drill-downs
+        resource_id = self.request.query_params.get('resource_id')
+        if resource_id:
+            queryset = queryset.filter(resource_id=str(resource_id))
+
+        # Always return the newest activity first for audit views and paginated APIs.
+        return queryset.order_by('-timestamp', '-id')
     
     @action(detail=False, methods=['get'])
     def summary(self, request):
