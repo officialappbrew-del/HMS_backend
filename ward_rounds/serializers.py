@@ -34,11 +34,20 @@ class BedSerializer(serializers.ModelSerializer):
     lastTurnover = serializers.DateTimeField(source='last_turnover', required=False, allow_null=True)
     wardId = serializers.CharField(source='ward.ward_id', read_only=True)
     patientId = serializers.CharField(source='patient.hospital_number', read_only=True)
+    mrn = serializers.CharField(source='patient.mrn', read_only=True)
+    patientName = serializers.CharField(source='patient.get_full_name', read_only=True)
+    gender = serializers.CharField(source='patient.gender', read_only=True)
+    age = serializers.IntegerField(source='patient.age', read_only=True)
+    phone = serializers.CharField(source='patient.phone', read_only=True)
+    bloodGroup = serializers.CharField(source='patient.blood_group', read_only=True)
+    genotype = serializers.CharField(source='patient.genotype', read_only=True)
+    dateOfBirth = serializers.DateField(source='patient.date_of_birth', read_only=True)
 
     class Meta:
         model = Bed
         fields = [
             'id', 'bedId', 'bedNumber', 'bedType', 'status', 'patientId',
+            'mrn', 'patientName', 'gender', 'age', 'phone', 'bloodGroup', 'genotype', 'dateOfBirth',
             'isPrivate', 'cleaningStatus', 'lastCleaned', 'lastTurnover',
             'wardId', 'created_at', 'updated_at', 'is_active'
         ]

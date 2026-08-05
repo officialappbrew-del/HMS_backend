@@ -148,28 +148,7 @@ class GrandRoundViewSet(TenantScopedModelViewSet):
         return Response(GrandRoundSerializer(grand_round).data)
 
 
-def ensure_demo_wards_and_beds(tenant):
-    if Ward.objects.filter(tenant=tenant).exists():
-        return
 
-    seed_wards = [
-        {'ward_id': 'W-001', 'ward_name': 'Male General Ward', 'ward_type': 'General Ward', 'floor': '1', 'supervisor': 'Nurse Ada Okafor', 'staff_count': 4, 'total_beds': 6},
-        {'ward_id': 'W-002', 'ward_name': 'Female General Ward', 'ward_type': 'General Ward', 'floor': '1', 'supervisor': 'Nurse Grace Nwosu', 'staff_count': 4, 'total_beds': 6},
-        {'ward_id': 'W-003', 'ward_name': 'Private/VIP Suite', 'ward_type': 'Private Ward', 'floor': '2', 'supervisor': 'Nurse Bimbo Lawal', 'staff_count': 3, 'total_beds': 4},
-    ]
-
-    for seed in seed_wards:
-        ward = Ward.objects.create(tenant=tenant, **seed)
-        for index in range(1, seed['total_beds'] + 1):
-            Bed.objects.create(
-                tenant=tenant,
-                ward=ward,
-                bed_id=f"{ward.ward_id}-B{index:02d}",
-                bed_number=index,
-                bed_type='Standard' if ward.ward_id != 'W-003' else 'Deluxe',
-                status=Bed.Status.OCCUPIED if index <= 2 else Bed.Status.AVAILABLE,
-                is_private=ward.ward_id == 'W-003',
-            )
 
 
 class WardViewSet(TenantScopedModelViewSet):
@@ -179,15 +158,6 @@ class WardViewSet(TenantScopedModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        if not queryset.exists():
-            tenant = None
-            user = self.request.user
-            if hasattr(user, 'tenant_user') and user.tenant_user:
-                tenant = user.tenant_user.tenant
-            if tenant:
-                ensure_demo_wards_and_beds(tenant)
-                queryset = super().get_queryset()
-
         search = self.request.query_params.get('search')
         if search:
             queryset = queryset.filter(
@@ -205,21 +175,6 @@ class WardViewSet(TenantScopedModelViewSet):
                 return Response({'detail': 'A ward with this ID already exists for this tenant.'}, status=status.HTTP_400_BAD_REQUEST)
             raise
 
-    @action(detail=False, methods=['post'], url_path='seed-demo')
-    def seed_demo(self, request):
-        tenant = None
-        user = request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
-
-        if not tenant:
-            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        ensure_demo_wards_and_beds(tenant)
-        queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
 
 class BedViewSet(TenantScopedModelViewSet):
     queryset = Bed.objects.all()
@@ -236,15 +191,6 @@ class BedViewSet(TenantScopedModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        if not queryset.exists():
-            tenant = None
-            user = self.request.user
-            if hasattr(user, 'tenant_user') and user.tenant_user:
-                tenant = user.tenant_user.tenant
-            if tenant:
-                ensure_demo_wards_and_beds(tenant)
-                queryset = super().get_queryset()
-
         ward_id = self.request.query_params.get('ward_id')
         status = self.request.query_params.get('status')
         search = self.request.query_params.get('search')
