@@ -1,0 +1,11 @@
+first_name,last_name,email,phone,role,department,designation,employment_date,password
+Richard,Cypher,richard.cypher@hospital.com,2348212345671,doctor,Emergency Department,Chief of Emergency Medicine,3/20/2025,TempPass123!
+Kahlan,Amnell,kahlan.amnell@hospital.com,2348223456782,nurse,Intensive Care Unit,ICU Director,3/22/2025,TempPass123!
+Zeddicus,Zorlander,zeddicus.zorlander@hospital.com,2348234567893,admin,Administration Department,Chief Administrator,3/25/2025,TempPass123!
+Cara,Mason,cara.mason@hospital.com,2348245678904,doctor,Surgical Department,Trauma Surgeon,3/28/2025,TempPass123!
+Darken,Rahl,darken.rahl@hospital.com,2348256789015,accountant,Finance Department,Finance Director,4/1/2025,TempPass123!
+Denna,Sister,denna.sister@hospital.com,2348267890126,pharmacist,Pharmacy Department,Pharmacy Manager,4/3/2025,TempPass123!
+Shota,TheWitch,shota.thewitch@hospital.com,2348278901237,lab_tech,Laboratory Department,Lab Director,4/5/2025,TempPass123!
+Jennsen,Rahl,jennsen.rahl@hospital.com,2348289012348,nurse,Outpatient Department,Head Nurse,4/8/2025,TempPass123!
+Chase,Brandon,chase.brandon@hospital.com,2348290123459,admin,Human Resources,HR Manager,4/10/2025,TempPass123!
+Ann,Cody,ann.cody@hospital.com,2348301234560,receptionist,Front Desk Department,Reception Supervisor,4/12/2025,TempPass123!

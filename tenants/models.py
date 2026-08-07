@@ -646,6 +646,36 @@ class TenantActivityLog(BaseModel):
         ]
 
 
+class BulkTenantUserUpload(BaseModel):
+    """Track bulk tenant user (staff) uploads processed in background."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='bulk_user_uploads')
+    uploaded_by = models.ForeignKey('tenants.TenantUser', on_delete=models.SET_NULL, null=True, related_name='bulk_user_uploads')
+    file = models.FileField(upload_to='bulk_uploads/')
+    original_filename = models.CharField(max_length=255)
+    status = models.CharField(max_length=20, choices=[
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ], default='pending')
+    total_records = models.IntegerField(default=0)
+    processed_records = models.IntegerField(default=0)
+    success_count = models.IntegerField(default=0)
+    failure_count = models.IntegerField(default=0)
+    errors = models.JSONField(blank=True, null=True, help_text='List of row-level errors')
+    result_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _('Bulk Tenant User Upload')
+        verbose_name_plural = _('Bulk Tenant User Uploads')
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Bulk user upload {self.id} - {self.original_filename}"
+
+
 class TenantBackup(BaseModel):
     """Backup records for tenant data."""
     class BackupType(models.TextChoices):
@@ -698,3 +728,66 @@ class TenantBackup(BaseModel):
         if self.start_time and self.end_time:
             self.duration = self.end_time - self.start_time
         super().save(*args, **kwargs)
+
+
+class CommunicationProfile(BaseModel):
+    """Per-tenant communication identity for email and SMS."""
+    tenant = models.OneToOneField(Tenant, on_delete=models.CASCADE, related_name='communication_profile')
+    is_active = models.BooleanField(default=True)
+    
+    # Email identity
+    email_from = models.EmailField(blank=True, help_text='Verified sender email address, e.g. no-reply@hospital.org')
+    from_name = models.CharField(max_length=200, blank=True, help_text="Display name for the sender, e.g. St. Mary's Hospital")
+    reply_to = models.EmailField(blank=True, help_text='Where replies should be delivered')
+    verified_domain = models.CharField(max_length=200, blank=True, help_text='Verified sending domain or subdomain')
+    email_provider = models.CharField(max_length=50, blank=True, help_text='sendgrid|ses|smtp|default')
+    email_username = models.CharField(max_length=200, blank=True)
+    email_password = models.CharField(max_length=200, blank=True, help_text='Encrypted at rest')
+    email_host = models.CharField(max_length=200, blank=True)
+    email_port = models.IntegerField(null=True, blank=True)
+    email_use_tls = models.BooleanField(default=True)
+    
+    # SMS identity
+    sms_provider = models.CharField(max_length=50, blank=True, help_text='twilio|messagebird|vonage|default')
+    sms_sender_id = models.CharField(max_length=20, blank=True, help_text='Alphanumeric sender ID or phone number')
+    sms_phone_number = models.CharField(max_length=20, blank=True)
+    sms_api_key = models.CharField(max_length=200, blank=True, help_text='Encrypted at rest')
+    sms_country_code = models.CharField(max_length=10, blank=True, default='NG')
+    
+    # Compliance & templates
+    consent_tracking_enabled = models.BooleanField(default=True)
+    opt_out_message = models.CharField(max_length=200, blank=True, default='Reply STOP to unsubscribe')
+    dnd_enabled = models.BooleanField(default=False)
+    message_templates = models.JSONField(default=dict, blank=True, help_text='Pre-approved message templates per channel/type')
+    
+    # Channel toggles & limits
+    email_enabled = models.BooleanField(default=True)
+    sms_enabled = models.BooleanField(default=True)
+    daily_email_limit = models.IntegerField(default=1000)
+    daily_sms_limit = models.IntegerField(default=500)
+    
+    def save(self, *args, **kwargs):
+        """Encrypt email password and SMS API key at rest (idempotent)."""
+        from .security import encrypt_value, is_encrypted
+        if self.email_password and not is_encrypted(self.email_password):
+            self.email_password = encrypt_value(self.email_password)
+        if self.sms_api_key and not is_encrypted(self.sms_api_key):
+            self.sms_api_key = encrypt_value(self.sms_api_key)
+        super().save(*args, **kwargs)
+
+    def get_decrypted_email_password(self):
+        """Return the decrypted email password (never stored in plaintext)."""
+        from .security import decrypt_value
+        return decrypt_value(self.email_password)
+
+    def get_decrypted_sms_api_key(self):
+        """Return the decrypted SMS API key (never stored in plaintext)."""
+        from .security import decrypt_value
+        return decrypt_value(self.sms_api_key)
+
+    def __str__(self):
+        return f"Communication profile for {self.tenant.name}"
+    
+    class Meta:
+        verbose_name = _('Communication Profile')
+        verbose_name_plural = _('Communication Profiles')

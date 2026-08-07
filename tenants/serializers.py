@@ -12,7 +12,8 @@ import jwt
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
-    TenantActivityLog, TenantBackup
+    TenantActivityLog, TenantBackup, BulkTenantUserUpload,
+    CommunicationProfile
 )
 from core.models import State, LGA, FacilityType, Specialization
 from core.serializers import StateSerializer, LGASerializer, FacilityTypeSerializer
@@ -150,6 +151,9 @@ class TenantSerializer(serializers.ModelSerializer):
         
         # Create default settings
         TenantSetting.objects.create(tenant=tenant)
+        
+        # Create default communication profile
+        CommunicationProfile.objects.create(tenant=tenant)
         
         # Create default departments
         self.create_default_departments(tenant)
@@ -683,6 +687,22 @@ class TenantBackupSerializer(serializers.ModelSerializer):
         return None
 
 
+class BulkTenantUserUploadSerializer(serializers.ModelSerializer):
+    """Serializer for bulk tenant user uploads."""
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+
+    class Meta:
+        model = BulkTenantUserUpload
+        fields = '__all__'
+        read_only_fields = [
+            'created_at', 'updated_at', 'tenant', 'uploaded_by',
+            'status', 'total_records', 'processed_records',
+            'success_count', 'failure_count', 'errors',
+            'result_message', 'started_at', 'completed_at'
+        ]
+
+
 class TenantSummarySerializer(serializers.ModelSerializer):
     """Serializer for tenant summary statistics."""
     user_count = serializers.IntegerField(read_only=True)
@@ -700,3 +720,14 @@ class TenantSummarySerializer(serializers.ModelSerializer):
             'department_count', 'active_modules_count',
             'storage_used_mb', 'last_backup_time'
         ]
+
+
+class CommunicationProfileSerializer(serializers.ModelSerializer):
+    """Serializer for per-tenant communication profiles."""
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+    tenant_code = serializers.CharField(source='tenant.code', read_only=True)
+    
+    class Meta:
+        model = CommunicationProfile
+        fields = '__all__'
+        read_only_fields = ['created_at', 'updated_at', 'tenant']

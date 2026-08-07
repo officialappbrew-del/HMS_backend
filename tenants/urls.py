@@ -7,7 +7,8 @@ from .views import (
     DepartmentViewSet, TenantSettingViewSet, TenantModuleViewSet,
     TenantInvitationViewSet, AcceptInvitationView,
     TenantActivityLogViewSet, TenantBackupViewSet,
-    PublicTenantListView
+    PublicTenantListView, BulkTenantUserUploadViewSet,
+    CommunicationProfileViewSet
 )
 
 router = DefaultRouter()
@@ -20,6 +21,8 @@ router.register(r'modules', TenantModuleViewSet, basename='tenant-module')
 router.register(r'invitations', TenantInvitationViewSet, basename='tenant-invitation')
 router.register(r'activity-logs', TenantActivityLogViewSet, basename='tenant-activity-log')
 router.register(r'backups', TenantBackupViewSet, basename='tenant-backup')
+router.register(r'bulk-uploads', BulkTenantUserUploadViewSet, basename='bulk-user-upload')
+router.register(r'communication-profile', CommunicationProfileViewSet, basename='communication-profile')
 
 urlpatterns = [
     path('invitations/accept/', AcceptInvitationView.as_view(), name='accept-invitation'),

@@ -1,3 +1,6 @@
+import csv
+import threading
+import logging
 from rest_framework import viewsets, status, permissions, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.authentication import BaseAuthentication
@@ -18,13 +21,15 @@ from rest_framework import serializers
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
-    TenantActivityLog, TenantBackup
+    TenantActivityLog, TenantBackup, BulkTenantUserUpload,
+    CommunicationProfile
 )
 from .serializers import (
     TenantSerializer, SubscriptionPlanSerializer, TenantUserSerializer,
     DepartmentSerializer, TenantSettingSerializer, TenantModuleSerializer,
     TenantInvitationSerializer, AcceptInvitationSerializer,
     TenantActivityLogSerializer, TenantBackupSerializer, TenantSummarySerializer,
+    BulkTenantUserUploadSerializer, CommunicationProfileSerializer,
     _check_employee_id_globally_unique
 )
 from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
@@ -2000,10 +2005,316 @@ class TenantBackupViewSet(viewsets.ModelViewSet):
         # 1. Validating backup integrity
         # 2. Taking a pre-restore backup
         # 3. Restoring database and files
-        # 4. Verifying restore
+# 4. Verifying restore
         
         return Response({
             'detail': 'Restore initiated',
             'backup_id': backup.id,
             'status': 'queued'
         })
+
+
+class BulkTenantUserUploadViewSet(viewsets.ModelViewSet):
+    """ViewSet for tracking bulk tenant user (staff) uploads."""
+    queryset = BulkTenantUserUpload.objects.all()
+    serializer_class = BulkTenantUserUploadSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_request_tenant(self):
+        user = getattr(self.request, 'user', None)
+        if user is None:
+            return None
+        if hasattr(user, 'tenant_user') and getattr(user, 'tenant_user', None):
+            return user.tenant_user.tenant
+        if hasattr(user, 'tenant') and getattr(user, 'tenant', None):
+            return user.tenant
+        return None
+
+    def get_queryset(self):
+        tenant = self._get_request_tenant()
+        if tenant:
+            return BulkTenantUserUpload.objects.filter(tenant=tenant)
+        return BulkTenantUserUpload.objects.none()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        tenant = self._get_request_tenant()
+        if tenant:
+            context['tenant'] = tenant
+        return context
+
+    @action(detail=False, methods=['post'], serializer_class=BulkTenantUserUploadSerializer)
+    def upload(self, request):
+        """Accept a CSV file and start background processing of tenant users."""
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return Response({'error': 'No file provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        tenant = self._get_request_tenant()
+        if not tenant:
+            return Response({'error': 'No tenant associated with your account.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        uploaded_by = None
+        user = getattr(request, 'user', None)
+        if user is not None and hasattr(user, 'tenant_user') and getattr(user, 'tenant_user', None):
+            uploaded_by = user.tenant_user
+        elif isinstance(user, TenantUser):
+            uploaded_by = user
+
+        upload = BulkTenantUserUpload.objects.create(
+            tenant=tenant,
+            uploaded_by=uploaded_by,
+            file=file_obj,
+            original_filename=file_obj.name,
+            status='processing',
+            started_at=timezone.now(),
+        )
+
+        thread = threading.Thread(target=_process_bulk_user_upload, args=(upload.id,))
+        thread.start()
+
+        serializer = self.get_serializer(upload)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+def _normalize_role(value):
+    """Map a role string from a CSV to a valid TenantUser.UserRole value."""
+    if not value:
+        return 'staff'
+    normalized = str(value).strip().lower()
+    mapping = {
+        'admin': 'admin',
+        'administrator': 'admin',
+        'doctor': 'doctor',
+        'physician': 'doctor',
+        'consultant': 'doctor',
+        'nurse': 'nurse',
+        'registered nurse': 'nurse',
+        'pharmacist': 'pharmacist',
+        'lab_tech': 'lab_tech',
+        'lab technician': 'lab_tech',
+        'receptionist': 'receptionist',
+        'reception': 'receptionist',
+        'accountant': 'accountant',
+        'hr_manager': 'hr_manager',
+        'hr manager': 'hr_manager',
+        'inventory_manager': 'inventory_manager',
+        'inventory manager': 'inventory_manager',
+        'patient': 'patient',
+    }
+    return mapping.get(normalized, normalized if normalized in TenantUser.UserRole.values else 'staff')
+
+
+def _parse_employment_date(value):
+    """Parse a date string; return None for empty input."""
+    if not value or not str(value).strip():
+        return None
+    dof = str(value).strip()
+    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'):
+        try:
+            from datetime import datetime
+            return datetime.strptime(dof, fmt).date()
+        except Exception:
+            pass
+    raise ValueError(f'Invalid date format: {dof}')
+
+
+def _process_bulk_user_upload(upload_id):
+    """Background processor for bulk tenant user uploads."""
+    from django.db import close_old_connections
+    close_old_connections()
+    try:
+        upload = BulkTenantUserUpload.objects.get(id=upload_id)
+        upload.status = 'processing'
+        upload.started_at = timezone.now()
+        upload.save(update_fields=['status', 'started_at'])
+
+        tenant = upload.tenant
+        file_path = upload.file.path
+        errors = []
+        success_count = 0
+        failure_count = 0
+        total_records = 0
+
+        try:
+            # Switch to the tenant schema for all TenantUser writes.
+            connection.set_tenant(tenant)
+
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                total_records = len(rows)
+                upload.total_records = total_records
+                upload.save(update_fields=['total_records'])
+
+                for idx, row in enumerate(rows):
+                    try:
+                        first_name = (row.get('first_name') or row.get('First Name') or '').strip()
+                        last_name = (row.get('last_name') or row.get('Last Name') or '').strip()
+                        email = (row.get('email') or row.get('Email') or '').strip().lower()
+                        phone = (row.get('phone') or row.get('Phone') or '').strip()
+                        role = (row.get('role') or row.get('Role') or '').strip()
+                        department_name = (row.get('department') or row.get('Department') or '').strip()
+                        designation = (row.get('designation') or row.get('Designation') or '').strip()
+                        employee_id = (row.get('employee_id') or row.get('Employee ID') or '').strip()
+                        employment_date = (row.get('employment_date') or row.get('Employment Date') or '').strip()
+                        password = (row.get('password') or row.get('Password') or '').strip() or 'TempPass123!'
+
+                        if not first_name or not last_name:
+                            raise ValueError('First name and last name are required.')
+                        if not email:
+                            raise ValueError('Email is required.')
+                        if not role:
+                            raise ValueError('Role is required.')
+
+                        try:
+                            validate_email(email)
+                        except Exception:
+                            raise ValueError(f'Invalid email format: {email}')
+
+                        normalized_role = _normalize_role(role)
+
+                        if TenantUser.objects.filter(tenant=tenant, email=email).exists():
+                            raise ValueError(f'A user with email "{email}" already exists in this tenant.')
+
+                        if employee_id:
+                            conflicting = _check_employee_id_globally_unique(employee_id, exclude_tenant=tenant)
+                            if conflicting:
+                                raise ValueError(
+                                    f'Employee ID "{employee_id}" is already used in tenant '
+                                    f'"{conflicting.name}" ({conflicting.domain}).'
+                                )
+
+                        department = None
+                        if department_name:
+                            department = Department.objects.filter(
+                                tenant=tenant,
+                                name__iexact=department_name,
+                            ).first() or Department.objects.filter(
+                                tenant=tenant,
+                                code__iexact=department_name,
+                            ).first()
+
+                        validated_data = {
+                            'tenant': tenant,
+                            'first_name': first_name,
+                            'last_name': last_name,
+                            'email': email,
+                            'phone': phone or '',
+                            'role': normalized_role,
+                            'designation': designation,
+                            'employee_id': employee_id or None,
+                            'employment_date': _parse_employment_date(employment_date),
+                            'employment_status': 'active',
+                            'is_staff': True,
+                            'is_active': True,
+                        }
+                        if department:
+                            validated_data['department'] = department
+
+                        with transaction.atomic():
+                            user = TenantUser.objects.create(**validated_data)
+                            user.set_password(password)
+                            user.save()
+
+                        success_count += 1
+                    except Exception as row_err:
+                        failure_count += 1
+                        errors.append({
+                            'row': idx + 2,
+                            'data': dict(row),
+                            'error': f"{type(row_err).__name__}: {str(row_err)}"
+                        })
+
+                    upload.processed_records = idx + 1
+                    upload.success_count = success_count
+                    upload.failure_count = failure_count
+                    upload.errors = errors
+                    try:
+                        upload.save(update_fields=['processed_records', 'success_count', 'failure_count', 'errors'])
+                    except Exception:
+                        pass
+
+            upload.status = 'completed'
+            upload.completed_at = timezone.now()
+            upload.result_message = f"Processed {total_records} records. {success_count} succeeded, {failure_count} failed."
+            upload.save(update_fields=['status', 'completed_at', 'result_message'])
+
+        except Exception as e:
+            upload.status = 'failed'
+            upload.completed_at = timezone.now()
+            upload.result_message = str(e)
+            upload.save(update_fields=['status', 'completed_at', 'result_message'])
+        finally:
+            connection.set_schema_to_public()
+
+    except BulkTenantUserUpload.DoesNotExist:
+        pass
+
+
+class CommunicationProfileViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing per-tenant communication profiles."""
+    serializer_class = CommunicationProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        is_global_admin = bool(
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'role', None) in ['super_admin', 'system_admin']
+        )
+        if is_global_admin:
+            return CommunicationProfile.objects.all()
+
+        tenant = None
+        if hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+        elif hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        elif getattr(user, 'tenant_public_id', None):
+            tenant = Tenant.objects.filter(public_id=user.tenant_public_id).first()
+        elif getattr(user, 'tenant_id', None):
+            tenant = Tenant.objects.filter(public_id=user.tenant_id).first()
+            if tenant is None and str(user.tenant_id).isdigit():
+                tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
+
+        if tenant:
+            return CommunicationProfile.objects.filter(tenant=tenant)
+        return CommunicationProfile.objects.none()
+
+    def perform_create(self, serializer):
+        tenant = self._resolve_tenant()
+        if not tenant:
+            raise serializers.ValidationError({'tenant': 'Tenant is required.'})
+        serializer.save(tenant=tenant)
+
+    def perform_update(self, serializer):
+        serializer.save()
+
+    @action(detail=False, methods=['get'], url_path='current')
+    def current(self, request):
+        """Return the communication profile for the current user's tenant."""
+        tenant = self._resolve_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant not resolved.'}, status=status.HTTP_400_BAD_REQUEST)
+        profile = getattr(tenant, 'communication_profile', None)
+        if not profile:
+            profile = CommunicationProfile.objects.create(tenant=tenant)
+        serializer = self.get_serializer(profile)
+        return Response(serializer.data)
+
+    def _resolve_tenant(self):
+        user = self.request.user
+        if hasattr(user, 'tenant') and user.tenant:
+            return user.tenant
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            return user.tenant_user.tenant
+        if getattr(user, 'tenant_public_id', None):
+            return Tenant.objects.filter(public_id=user.tenant_public_id).first()
+        if getattr(user, 'tenant_id', None):
+            tenant = Tenant.objects.filter(public_id=user.tenant_id).first()
+            if tenant is None and str(user.tenant_id).isdigit():
+                tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
+            return tenant
+        return None

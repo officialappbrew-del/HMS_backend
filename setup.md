@@ -43,6 +43,7 @@ python -c "exec(open('tenants_setup.py').read())"
 - Tenant list/create: http://localhost:8000/api/v1/tenants/tenants/
 - Tenant root admin create: http://localhost:8000/api/v1/tenants/tenants/{tenant_id}/create-root-admin/
 - Tenant users: http://localhost:8000/api/v1/tenants/users/
+- Communication profile: http://localhost:8000/api/v1/tenants/communication-profile/
 - Swagger docs: http://localhost:8000/swagger/
 
 ## 3) Tenant setup flow
@@ -332,7 +333,146 @@ Or use the patient endpoint ID / hospital number if needed.
 POST /api/v1/patients/login/
 ```
 
-## 4) Quick check
+## 4) Communication Profile API
+
+The **Communication Profile** gives each tenant its own sender identity for email and SMS, so outbound messages use the hospital's own verified "from" address/number and its logo/name in branded email templates. A profile is created automatically whenever a tenant is created.
+
+Base URL: `http://localhost:8000/api/v1/tenants/communication-profile/`
+
+All requests require a valid access token: `Authorization: Bearer <access_token>`.
+
+### GET /current/ — Get the current tenant's profile
+
+Returns the communication profile for the authenticated user's own tenant. If none exists, one is created automatically.
+
+```http
+GET /api/v1/tenants/communication-profile/current/
+```
+
+Example response (200 OK):
+
+```json
+{
+  "id": 1,
+  "tenant": 1,
+  "tenant_name": "Lagos General Hospital",
+  "tenant_code": "LGH",
+  "is_active": true,
+  "email_from": "",
+  "from_name": "",
+  "reply_to": "",
+  "verified_domain": "",
+  "email_provider": "",
+  "email_username": "",
+  "email_password": "",
+  "email_host": "",
+  "email_port": null,
+  "email_use_tls": true,
+  "sms_provider": "",
+  "sms_sender_id": "",
+  "sms_phone_number": "",
+  "sms_api_key": "",
+  "sms_country_code": "NG",
+  "consent_tracking_enabled": true,
+  "opt_out_message": "Reply STOP to unsubscribe",
+  "dnd_enabled": false,
+  "message_templates": {},
+  "email_enabled": true,
+  "sms_enabled": true,
+  "daily_email_limit": 1000,
+  "daily_sms_limit": 500,
+  "created_at": "2024-01-01T10:00:00.000000Z",
+  "updated_at": "2024-01-01T10:00:00.000000Z"
+}
+```
+
+### PATCH /current/ — Update the current tenant's profile
+
+Use `PATCH` (or `PUT`) to update the current tenant's communication settings. Only send the fields you want to change.
+
+```http
+PATCH /api/v1/tenants/communication-profile/current/
+```
+
+Example payload:
+
+```json
+{
+  "email_from": "no-reply@lagosgeneral.com",
+  "from_name": "Lagos General Hospital",
+  "reply_to": "support@lagosgeneral.com",
+  "verified_domain": "mail.lagosgeneral.com",
+  "email_provider": "sendgrid",
+  "email_host": "smtp.sendgrid.net",
+  "email_port": 587,
+  "email_username": "apikey",
+  "email_password": "SG.super-secret-sendgrid-key",
+  "email_use_tls": true,
+  "sms_provider": "twilio",
+  "sms_sender_id": "LagosGH",
+  "sms_phone_number": "+2348099999999",
+  "sms_api_key": "AC-super-secret-twilio-key",
+  "sms_country_code": "NG",
+  "daily_email_limit": 2000,
+  "daily_sms_limit": 1000
+}
+```
+
+> `email_password` and `sms_api_key` are encrypted at rest. The API returns the plaintext value in the response for convenience, so you can echo back the same value on update without it being re-encrypted.
+
+### CRUD endpoints (system admin or tenant-scoped)
+
+The router also exposes standard list/retrieve/create/update/delete under the same base URL:
+
+- `GET  /api/v1/tenants/communication-profile/` — list profiles (system admin sees all; tenant users see only their own)
+- `POST /api/v1/tenants/communication-profile/` — create a profile (tenant is auto-resolved from the request)
+- `GET  /api/v1/tenants/communication-profile/{id}/` — retrieve a specific profile
+- `PUT/PATCH /api/v1/tenants/communication-profile/{id}/` — update a profile
+- `DELETE /api/v1/tenants/communication-profile/{id}/` — delete a profile
+
+Example create payload (same shape as the `PATCH /current/` example above; `tenant` is resolved automatically):
+
+```json
+{
+  "email_from": "no-reply@lagosgeneral.com",
+  "from_name": "Lagos General Hospital",
+  "sms_sender_id": "LagosGH",
+  "sms_phone_number": "+2348099999999",
+  "opt_out_message": "Reply STOP to opt out",
+  "message_templates": {
+    "email": {
+      "appointment_reminder": "Dear {{ patient_name }}, your appointment is on {{ date }}."
+    },
+    "sms": {
+      "password_reset": "Your password reset token is {{ token }}."
+    }
+  }
+}
+```
+
+### Field reference
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `email_from` | string | Verified sender email (e.g. `no-reply@hospital.org`) |
+| `from_name` | string | Display name shown in the client's inbox |
+| `reply_to` | string | Address where replies should be delivered |
+| `verified_domain` | string | Verified sending domain/subdomain |
+| `email_provider` | string | `sendgrid` / `ses` / `smtp` / `default` |
+| `email_host` / `email_port` / `email_username` / `email_password` / `email_use_tls` | — | SMTP connection settings |
+| `sms_provider` | string | `twilio` / `messagebird` / `vonage` / `default` |
+| `sms_sender_id` | string | Alphanumeric sender ID or number |
+| `sms_phone_number` | string | Dedicated SMS number |
+| `sms_api_key` | string | Encrypted provider key |
+| `sms_country_code` | string | Region code (default `NG`) |
+| `consent_tracking_enabled` | boolean | Track patient opt-in/opt-out |
+| `opt_out_message` | string | STOP/unsubscribe wording |
+| `dnd_enabled` | boolean | Do Not Disturb enabled |
+| `message_templates` | object | Pre-approved templates per channel (`email`/`sms`) and type |
+| `email_enabled` / `sms_enabled` | boolean | Channel on/off |
+| `daily_email_limit` / `daily_sms_limit` | integer | Daily send caps |
+
+## 5) Quick check
 
 If you want to confirm the public tenant exists:
 

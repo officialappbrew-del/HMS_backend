@@ -11,7 +11,7 @@ from .serializers import (
 )
 from core.views import TenantScopedModelViewSet
 from patients.models import Patient
-from core.permissions import IsDoctor, IsPharmacist, IsNurse, IsDoctorOrPharmacist, IsDoctorOrNurse
+from core.permissions import IsDoctor, IsPharmacist, IsNurse, IsDoctorOrPharmacist, IsDoctorOrNurse, IsClinicalStaff
 
 
 class ConsultationNoteViewSet(TenantScopedModelViewSet):
@@ -147,7 +147,7 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
 class VitalSignViewSet(TenantScopedModelViewSet):
     queryset = VitalSign.objects.all()
     serializer_class = VitalSignSerializer
-    permission_classes = [IsDoctorOrNurse]
+    permission_classes = [IsClinicalStaff]
 
     def perform_create(self, serializer):
         super().perform_create(serializer)
@@ -190,7 +190,7 @@ class EarlyWarningScoreViewSet(TenantScopedModelViewSet):
 class VitalSignAlertViewSet(TenantScopedModelViewSet):
     queryset = VitalSignAlert.objects.all()
     serializer_class = VitalSignAlertSerializer
-    permission_classes = [IsDoctorOrNurse]
+    permission_classes = [IsClinicalStaff]
 
     def get_queryset(self):
         queryset = super().get_queryset()

@@ -6,7 +6,8 @@ from django.utils.translation import gettext_lazy as _
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
-    TenantActivityLog, TenantBackup
+    TenantActivityLog, TenantBackup, BulkTenantUserUpload,
+    CommunicationProfile
 )
 
 
@@ -155,4 +156,39 @@ class TenantAdmin(admin.ModelAdmin):
             messages.SUCCESS
         )
     cancel_subscriptions.short_description = "Cancel selected subscriptions"
+
+
+@admin.register(CommunicationProfile)
+class CommunicationProfileAdmin(admin.ModelAdmin):
+    list_display = ('tenant_name', 'email_from', 'from_name', 'sms_provider', 'sms_sender_id', 'email_enabled', 'sms_enabled')
+    list_filter = ('email_provider', 'sms_provider', 'email_enabled', 'sms_enabled', 'consent_tracking_enabled', 'dnd_enabled')
+    search_fields = ('tenant__name', 'tenant__code', 'email_from', 'from_name', 'sms_sender_id', 'sms_phone_number')
+    readonly_fields = ('created_at', 'updated_at', 'tenant')
+    fieldsets = (
+        (None, {'fields': ('tenant',)}),
+        (_('Email Identity'), {
+            'fields': ('email_from', 'from_name', 'reply_to', 'verified_domain', 'email_provider'),
+        }),
+        (_('Email Provider Credentials'), {
+            'fields': ('email_username', 'email_password', 'email_host', 'email_port', 'email_use_tls'),
+        }),
+        (_('SMS Identity'), {
+            'fields': ('sms_provider', 'sms_sender_id', 'sms_phone_number', 'sms_country_code'),
+        }),
+        (_('SMS Provider Credentials'), {
+            'fields': ('sms_api_key',),
+        }),
+        (_('Compliance'), {
+            'fields': ('consent_tracking_enabled', 'opt_out_message', 'dnd_enabled', 'message_templates'),
+        }),
+        (_('Channels & Limits'), {
+            'fields': ('email_enabled', 'sms_enabled', 'daily_email_limit', 'daily_sms_limit'),
+        }),
+        (_('Dates'), {'fields': ('created_at', 'updated_at')}),
+    )
+    
+    def tenant_name(self, obj):
+        return obj.tenant.name
+    tenant_name.short_description = 'Tenant'
+    tenant_name.admin_order_field = 'tenant__name'
 

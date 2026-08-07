@@ -9,14 +9,14 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
+        ('lab', '0001_initial'),
         ('patients', '0001_initial'),
-        ('billing', '0001_initial'),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='payment',
+            model_name='ncdcreport',
             name='patient',
-            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='payments', to='patients.patient'),
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='patients.patient'),
         ),
     ]

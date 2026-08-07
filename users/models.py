@@ -12,7 +12,6 @@ import base64
 
 from core.models import BaseModel, EncryptedField
 
-
 class GlobalUser(AbstractUser):
     """Global user model for system administrators."""
     class GlobalRole(models.TextChoices):
