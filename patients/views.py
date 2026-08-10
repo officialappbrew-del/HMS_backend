@@ -659,7 +659,9 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related(
+            'patient', 'doctor', 'nurse', 'department'
+        )
         
         status_filter = self.request.query_params.get('status')
         if status_filter:
@@ -899,7 +901,9 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related(
+            'patient', 'doctor', 'department', 'created_by', 'updated_by'
+        )
         
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')

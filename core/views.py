@@ -1,10 +1,13 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
 from django.utils import timezone
 from django.db.models import Count, Q, F
+from django.db import connection as django_connection
+from django.core.cache import cache
 from patients.models import Patient, PatientVisit
 from clinical.models import Prescription, VitalSign, VitalSignAlert
 from pharmacy.models import Drug
@@ -399,3 +402,40 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
             'top_actions': list(actions),
             'top_resource_types': list(resource_types),
         })
+
+
+class HealthCheckView(APIView):
+    """Lightweight health check endpoint for load balancers and orchestration."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        checks = {
+            'status': 'ok',
+            'timestamp': timezone.now().isoformat(),
+            'django': 'ok',
+            'database': self._check_database(),
+            'cache': self._check_cache(),
+        }
+        overall_ok = all(
+            v in ('ok', True) for k, v in checks.items()
+            if k not in {'status', 'timestamp'}
+        )
+        checks['status'] = 'ok' if overall_ok else 'degraded'
+        return Response(checks, status=status.HTTP_200_OK if overall_ok else status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    def _check_database(self):
+        try:
+            with django_connection.cursor() as cursor:
+                cursor.execute('SELECT 1')
+            return 'ok'
+        except Exception:
+            return 'error'
+
+    def _check_cache(self):
+        try:
+            cache.set('healthcheck', 'ok', 5)
+            value = cache.get('healthcheck')
+            return 'ok' if value == 'ok' else 'error'
+        except Exception:
+            return 'error'

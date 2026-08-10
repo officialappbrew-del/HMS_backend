@@ -1,6 +1,7 @@
 from rest_framework import authentication
 from rest_framework.exceptions import AuthenticationFailed
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.conf import settings
 from django.db import connection
@@ -14,7 +15,6 @@ from cryptography.exceptions import InvalidSignature
 from .models import UserSession, SecurityEvent, RSAKey
 from tenants.models import Tenant, TenantUser
 from patients.models import Patient
-
 
 class RSAAuthentication(authentication.BaseAuthentication):
     """RSA-based authentication for API requests."""
@@ -84,13 +84,17 @@ class RSAAuthentication(authentication.BaseAuthentication):
                 ip_address=self.get_client_ip(request),
                 user_agent=request.META.get('HTTP_USER_AGENT', '')
             )
-            
+
             return (user, None)
-            
+
         except jwt.InvalidTokenError:
             raise AuthenticationFailed('Invalid token')
-        except Exception as e:
-            raise AuthenticationFailed(str(e))
+        # Do NOT leak internal exception details to the client. Log locally and
+        # return a generic error.
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Unexpected error during RSA authentication')
+            raise AuthenticationFailed('Authentication failed. Please try again.')
     
     def verify_signature(self, public_key_pem, data, signature):
         """Verify RSA signature."""
@@ -129,7 +133,6 @@ class RSAAuthentication(authentication.BaseAuthentication):
         else:
             ip = request.META.get('REMOTE_ADDR')
         return ip
-
 
 class JWTAuthentication(authentication.BaseAuthentication):
     """JWT-based authentication for both global users and tenant users."""
@@ -225,11 +228,26 @@ class JWTAuthentication(authentication.BaseAuthentication):
                 user.tenant_user = user
                 user.tenant_public_id = str(tenant.public_id)
                 user.tenant_domain = tenant.domain
+
                 user.is_staff = user.role in {
                     'admin', 'doctor', 'nurse', 'pharmacist', 'lab_tech',
                     'receptionist', 'accountant', 'hr_manager',
                     'inventory_manager'
                 }
+
+                # Token invalidation: reject tokens issued before the last
+                # password change/reset (token_version was bumped).
+                token_version = payload.get('token_version')
+                if token_version is not None and int(token_version) < getattr(user, 'token_version', 1):
+                    raise AuthenticationFailed('Token invalidated. Please log in again.')
+
+                # Enforce 2FA for tenant accounts that have it enabled.
+                # (TenantUser model may not have two_fa_enabled, but GlobalUser
+                # linked via global_user does.)
+                _global_user = getattr(user, 'global_user', None)
+                if _global_user is not None and getattr(_global_user, 'two_fa_configured', False) and not payload.get('two_fa_verified', False):
+                    raise AuthenticationFailed('2FA verification required')
+
                 return (user, payload)
 
             # Global user path
@@ -242,6 +260,12 @@ class JWTAuthentication(authentication.BaseAuthentication):
                     user.tenant_id = tenant_id
             except User.DoesNotExist:
                 raise AuthenticationFailed('User not found')
+
+            # Token invalidation: reject tokens issued before the last password
+            # change/reset for global users as well.
+            token_version = payload.get('token_version')
+            if token_version is not None and int(token_version) < getattr(user, 'token_version', 1):
+                raise AuthenticationFailed('Token invalidated. Please log in again.')
 
             if session_id:
                 try:
@@ -260,8 +284,11 @@ class JWTAuthentication(authentication.BaseAuthentication):
                 except UserSession.DoesNotExist:
                     raise AuthenticationFailed('Invalid session')
 
-            # if getattr(user, 'two_fa_enabled', False) and not payload.get('two_fa_verified', False):
-            #     raise AuthenticationFailed('2FA verification required')
+            # Enforce 2FA for accounts that have it configured and verified but
+            # have not yet presented a verified second factor in this token.
+            if getattr(user, 'two_fa_configured', False) and not payload.get('two_fa_verified', False):
+                from rest_framework.exceptions import AuthenticationFailed as _AF
+                raise _AF('2FA verification required')
 
             return (user, payload)
 
@@ -269,5 +296,135 @@ class JWTAuthentication(authentication.BaseAuthentication):
             raise AuthenticationFailed('Token expired')
         except jwt.InvalidTokenError:
             raise AuthenticationFailed('Invalid token')
-        except Exception as e:
-            raise AuthenticationFailed(str(e))
+        except AuthenticationFailed:
+            raise
+        except ObjectDoesNotExist:
+            # All model-agnostic "not found" errors (User, Patient, Tenant,
+            # TenantUser, UserSession) map to a generic auth failure without
+            # leaking which record was missing.
+            raise AuthenticationFailed('Authentication failed')
+        # Do NOT leak internal exception details to the client. Log locally and
+        # return a generic error. This prevents stack traces / DB detail leakage.
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Unexpected error during JWT authentication')
+            raise AuthenticationFailed('Authentication failed. Please try again.')
+
+
+class CookieJWTAuthentication(authentication.BaseAuthentication):
+    """JWT authentication that reads the access token from an HttpOnly cookie.
+
+    This enables the frontend to avoid storing tokens in localStorage, which
+    reduces the XSS attack surface. Requests must be made with credentials
+    (cookies) included, and mutating requests must carry a valid CSRF token.
+    """
+
+    COOKIE_NAME = 'access_token'
+
+    def authenticate(self, request):
+        token = request.COOKIES.get(self.COOKIE_NAME)
+        if not token:
+            return None
+
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SIMPLE_JWT['SIGNING_KEY'],
+                algorithms=['HS256']
+            )
+
+            user_id = payload.get('user_id')
+            if not user_id and not payload.get('is_patient'):
+                return None
+
+            if payload.get('is_patient'):
+                patient_id = payload.get('patient_id') or user_id
+                if not patient_id:
+                    return None
+                try:
+                    patient = Patient.objects.get(id=patient_id, is_active=True)
+                except Patient.DoesNotExist:
+                    return None
+                patient.is_authenticated = True
+                patient.is_patient = True
+                patient.role = 'patient'
+                return (patient, payload)
+
+            if payload.get('is_tenant_user'):
+                tenant_public_id = payload.get('tenant_public_id') or payload.get('tenant_id')
+                tenant = None
+                if tenant_public_id:
+                    tenant = Tenant.objects.filter(public_id=tenant_public_id).first()
+                    if tenant is None and str(tenant_public_id).isdigit():
+                        tenant = Tenant.objects.filter(id=int(tenant_public_id)).first()
+
+                user = None
+                if user_id is not None and str(user_id).isdigit():
+                    user = TenantUser.objects.filter(id=int(user_id), is_active=True).first()
+                if user is None:
+                    user_qs = TenantUser.objects.filter(employee_id=str(user_id), is_active=True)
+                    if tenant:
+                        user_qs = user_qs.filter(tenant=tenant)
+                    user = user_qs.first()
+                if user is None:
+                    user_qs = TenantUser.objects.filter(username=str(user_id), is_active=True)
+                    if tenant:
+                        user_qs = user_qs.filter(tenant=tenant)
+                    user = user_qs.first()
+                if not user:
+                    return None
+
+                user.is_authenticated = True
+                user.is_tenant_user = True
+                user.tenant = tenant
+                user.tenant_user = user
+                user.tenant_public_id = str(tenant.public_id) if tenant else None
+                user.tenant_domain = tenant.domain if tenant else None
+                user.is_staff = user.role in {
+                    'admin', 'doctor', 'nurse', 'pharmacist', 'lab_tech',
+                    'receptionist', 'accountant', 'hr_manager',
+                    'inventory_manager'
+                }
+                return (user, payload)
+
+            User = get_user_model()
+            try:
+                user = User.objects.get(id=user_id, is_active=True)
+                user.is_tenant_user = payload.get('is_tenant_user', False)
+                tenant_id = payload.get('tenant_id')
+                if tenant_id:
+                    user.tenant_id = tenant_id
+            except User.DoesNotExist:
+                return None
+
+            token_version = payload.get('token_version')
+            if token_version is not None and int(token_version) < getattr(user, 'token_version', 1):
+                return None
+
+            session_id = payload.get('session_id')
+            if session_id:
+                try:
+                    session = UserSession.objects.get(
+                        session_key=session_id,
+                        user=user,
+                        is_active=True
+                    )
+                    if session.is_expired():
+                        session.terminate()
+                        return None
+                    session.last_activity = timezone.now()
+                    session.save()
+                except UserSession.DoesNotExist:
+                    return None
+
+            if getattr(user, 'two_fa_configured', False) and not payload.get('two_fa_verified', False):
+                return None
+
+            return (user, payload)
+
+        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError, ObjectDoesNotExist):
+            return None
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Unexpected error during cookie JWT authentication')
+            return None

@@ -15,10 +15,12 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
     Extended TenantMainMiddleware that supports header-based tenant resolution.
     This allows testing without configuring DNS entries.
     """
-    
+
     PUBLIC_SCHEMA_URLS = [
         '/api/v1/auth/',
         '/api/v1/core/',
+        '/api/v1/core/health/',
+        '/api/v1/superadmin/',
         '/api/v1/tenants/active-tenants/',
         '/api/v1/tenants/invitations/accept/',
         '/admin/',
@@ -26,10 +28,11 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         '/swagger/',
         '/redoc/',
         '/test-public/',
+        '/health/',
         '/media/',
         '/static/',
     ]
-    
+
     def _resolve_tenant_from_header(self, request):
         tenant_id = request.headers.get('X-Tenant-ID')
         if not tenant_id:
@@ -41,19 +44,15 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
             return tenant
         except (ValueError, TypeError):
             return None
-    
+
     def _resolve_tenant_from_jwt(self, request):
-        auth_header = request.headers.get('Authorization', '')
-        if not auth_header.startswith('Bearer '):
-            return None
-        token = auth_header.split(' ', 1)[1]
+        # Reuse the JWT payload already decoded (and cached) by the logging
+        # middleware to avoid redundant HMAC verification on the hot path.
+        from smartcare_hms.logging_middleware import get_jwt_payload
         try:
-            payload = jwt.decode(
-                token,
-                settings.SIMPLE_JWT['SIGNING_KEY'],
-                algorithms=['HS256'],
-                options={'verify_exp': True}
-            )
+            payload = get_jwt_payload(request)
+            if not payload:
+                return None
             tenant_public_id = payload.get('tenant_public_id') or payload.get('tenant_id')
             is_tenant_user = payload.get('is_tenant_user')
             if is_tenant_user and tenant_public_id:
@@ -64,7 +63,7 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         except (jwt.InvalidTokenError, ValueError, TypeError, AttributeError):
             pass
         return None
-    
+
     def _resolve_tenant_from_user(self, request):
         if request.user and request.user.is_authenticated:
             if hasattr(request.user, 'tenant_user') and request.user.tenant_user:
@@ -72,31 +71,31 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
             if hasattr(request.user, 'tenant') and request.user.tenant:
                 return request.user.tenant
         return None
-    
+
     def process_request(self, request):
         """Override to support header-based tenant resolution."""
         path = request.path_info
         is_public = any(path.startswith(url) for url in self.PUBLIC_SCHEMA_URLS)
-        
+
         if is_public:
             connection.set_schema_to_public()
             return
-        
+
         # Priority: authenticated user > JWT token > X-Tenant-ID header > domain
         tenant = self._resolve_tenant_from_user(request)
         if tenant:
             connection.set_tenant(tenant)
             return
-        
+
         tenant = self._resolve_tenant_from_jwt(request)
         if tenant:
             connection.set_tenant(tenant)
             return
-        
+
         tenant = self._resolve_tenant_from_header(request)
         if tenant:
             connection.set_tenant(tenant)
             return
-        
+
         # Fall back to parent implementation for domain-based resolution
         super().process_request(request)

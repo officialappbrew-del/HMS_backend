@@ -206,11 +206,18 @@ class SubscriptionPlan(BaseModel):
     price_yearly = models.DecimalField(max_digits=12, decimal_places=2)
     currency = models.CharField(max_length=3, default='NGN')
     
+    # Service costs (third-party platforms)
+    email_service_cost_monthly = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='Cost of email service provider per month')
+    sms_service_cost_monthly = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='Cost of SMS service provider per month')
+    service_providers = models.JSONField(default=dict, blank=True, help_text='Configured service providers, e.g. {"email": "sendgrid", "sms": "twilio"}')
+    
     # Limits
     max_users = models.IntegerField(default=5)
     max_patients = models.IntegerField(default=1000)
     max_storage_gb = models.IntegerField(default=10)
     max_api_calls_per_day = models.IntegerField(default=10000)
+    email_limit_monthly = models.IntegerField(default=1000, help_text='Max emails per month')
+    sms_limit_monthly = models.IntegerField(default=500, help_text='Max SMS per month')
     
     # Features
     features = models.JSONField(default=dict, blank=True)
@@ -223,6 +230,7 @@ class SubscriptionPlan(BaseModel):
     # Metadata
     is_default = models.BooleanField(default=False)
     display_order = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
     
     def __str__(self):
         return f"{self.name} - ₦{self.price_monthly}/month"
@@ -304,6 +312,9 @@ class TenantUser(BaseModel):
     password_changed_at = models.DateTimeField(auto_now_add=True)
     failed_login_attempts = models.IntegerField(default=0)
     account_locked_until = models.DateTimeField(null=True, blank=True)
+    # Token invalidation version. Incremented on password change/reset so that
+    # previously issued JWTs become invalid immediately.
+    token_version = models.IntegerField(default=1)
     
     # Settings
     preferences = models.JSONField(default=dict, blank=True)
@@ -791,3 +802,48 @@ class CommunicationProfile(BaseModel):
     class Meta:
         verbose_name = _('Communication Profile')
         verbose_name_plural = _('Communication Profiles')
+
+
+class SupportTicket(BaseModel):
+    """Support ticket for tenant technical issues."""
+    class Priority(models.TextChoices):
+        LOW = 'low', _('Low')
+        MEDIUM = 'medium', _('Medium')
+        HIGH = 'high', _('High')
+        CRITICAL = 'critical', _('Critical')
+    
+    class Status(models.TextChoices):
+        OPEN = 'open', _('Open')
+        IN_PROGRESS = 'in_progress', _('In Progress')
+        RESOLVED = 'resolved', _('Resolved')
+        CLOSED = 'closed', _('Closed')
+    
+    tenant = models.ForeignKey('Tenant', on_delete=models.CASCADE, related_name='support_tickets')
+    subject = models.CharField(max_length=200)
+    description = models.TextField()
+    priority = models.CharField(max_length=20, choices=Priority.choices, default=Priority.MEDIUM)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    created_by_name = models.CharField(max_length=100, help_text="Name of person who created the ticket")
+    created_by_email = models.EmailField(help_text="Email of person who created the ticket")
+    created_by_role = models.CharField(max_length=50, help_text="Role of creator (e.g. admin, receptionist)")
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_support_tickets'
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution_notes = models.TextField(blank=True)
+    
+    class Meta:
+        verbose_name = _('Support Ticket')
+        verbose_name_plural = _('Support Tickets')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['tenant', 'status', '-created_at']),
+            models.Index(fields=['priority', '-created_at']),
+        ]
+    
+    def __str__(self):
+        return f"[{self.get_status_display()}] {self.subject} - {self.tenant.name}"

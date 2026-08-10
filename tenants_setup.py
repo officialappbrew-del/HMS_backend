@@ -62,14 +62,14 @@ subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
 public_tenant, tenant_created = Tenant.objects.get_or_create(
     schema_name='public',
     defaults={
-        # 'name': 'local',
-        'name': 'Render',
-        'code': 'RENDER',
-        # 'code': 'LOCAL',
-        'domain': 'hms-backend-l09g.onrender.com',
-        # 'domain': 'localhost',
-        'email': 'admin.app@onrender.com',
-        # 'email': 'admin.app@local.com',
+        'name': 'local',
+        # 'name': 'Render',
+        # 'code': 'RENDER',
+        'code': 'LOCAL',
+        # 'domain': 'hms-backend-l09g.onrender.com',
+        'domain': 'localhost',
+        # 'email': 'admin.app@onrender.com',
+        'email': 'admin.app@local.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
@@ -103,8 +103,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
 # Create the domain for the public tenant
 TenantDomain.objects.get_or_create(
     tenant=public_tenant,
-    domain='hms-backend-l09g.onrender.com',
-    # domain='localhost',
+    # domain='hms-backend-l09g.onrender.com',
+    domain='localhost',
     defaults={'is_primary': True},
 )
 

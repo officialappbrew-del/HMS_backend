@@ -26,19 +26,13 @@ class IntegrationAPIKeyAuthentication(permissions.BasePermission):
         if not token:
             return False
 
-        prefix = token[:5]
-        client = IntegrationClient.objects.filter(is_active=True).order_by('name').first()
-        if client is None:
-            return False
-
+        # Match the token strictly against registered clients by their prefix.
+        # No arbitrary fallback client is used to avoid authentication bypass.
         for candidate in IntegrationClient.objects.filter(is_active=True):
             if candidate.api_key_prefix and token.startswith(candidate.api_key_prefix):
                 if candidate.verify_api_key(token):
                     request.integration_client = candidate
                     return True
-
-        if client.api_key_prefix and token.startswith(client.api_key_prefix):
-            return client.verify_api_key(token)
 
         return False
 
@@ -227,7 +221,10 @@ class HL7IntegrationAPIView(APIView):
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        tenant = getattr(request.user, 'tenant_user', None)
+        # HL7 messages come from authenticated integration clients (API key),
+        # NOT from request.user (which is AnonymousUser for API-key auth).
+        # Use request.integration_client.tenant to scope the ingest correctly.
+        tenant = getattr(request, 'integration_client', None)
         tenant = tenant.tenant if tenant else None
 
         try:

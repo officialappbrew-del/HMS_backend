@@ -10,14 +10,14 @@ from .serializers import (
     LabResultCreateSerializer, NCDCReportSerializer, NCDCReportSubmitSerializer,
     InstrumentMaintenanceSerializer
 )
-from core.permissions import IsDoctor, IsLabTechnician
+from core.permissions import IsDoctor, IsLabTechnician, IsClinicalStaff
 from core.views import TenantScopedModelViewSet
 
 
 class LabTestViewSet(TenantScopedModelViewSet):
     queryset = LabTest.objects.all()
     serializer_class = LabTestSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsLabTechnician]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -44,10 +44,10 @@ class LabTestViewSet(TenantScopedModelViewSet):
 class LabOrderViewSet(TenantScopedModelViewSet):
     queryset = LabOrder.objects.all()
     serializer_class = LabOrderSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsClinicalStaff]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related('patient', 'test', 'ordered_by')
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -202,7 +202,7 @@ class LabOrderViewSet(TenantScopedModelViewSet):
 
 class LabResultViewSet(TenantScopedModelViewSet):
     queryset = LabResult.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsLabTechnician]
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -259,7 +259,7 @@ class LabResultViewSet(TenantScopedModelViewSet):
 class NCDCReportViewSet(TenantScopedModelViewSet):
     queryset = NCDCReport.objects.all()
     serializer_class = NCDCReportSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsClinicalStaff]
 
     def get_queryset(self):
         queryset = super().get_queryset()

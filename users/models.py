@@ -51,9 +51,12 @@ class GlobalUser(AbstractUser):
         blank=True
     )
     
-    # Security fields
+# Security fields
     rsa_public_key = models.TextField(null=True, blank=True)
-    two_fa_enabled = models.BooleanField(default=True)
+    # 2FA is opt-in: it defaults to False so new admins are not locked out
+    # before they have configured a usable second factor. Enforce 2FA only when
+    # `two_fa_configured` is True (enabled AND a verified method exists).
+    two_fa_enabled = models.BooleanField(default=False)
     two_fa_method = models.CharField(
         max_length=20,
         choices=[
@@ -73,6 +76,11 @@ class GlobalUser(AbstractUser):
     account_locked_until = models.DateTimeField(null=True, blank=True, db_index=True)
     password_changed_at = models.DateTimeField(auto_now_add=True)
     last_security_alert = models.DateTimeField(null=True, blank=True)
+
+    # Token invalidation version. Incremented on password change/reset so that
+    # all previously issued JWTs become invalid immediately (no token_blacklist
+    # dependency). Existing tokens without a claim keep working (handled in auth).
+    token_version = models.IntegerField(default=1)
     
     # Global permissions
     can_create_tenants = models.BooleanField(default=False)
@@ -127,6 +135,33 @@ class GlobalUser(AbstractUser):
         )
         return private_pem.decode()
     
+    @property
+    def two_fa_configured(self):
+        """Whether 2FA is both enabled AND has a usable, verified method.
+
+        2FA is only enforced when this is True. A user who has ``two_fa_enabled``
+        set but has never configured a secret (e.g. a bootstrap super admin) is
+        NOT considered configured, so they are not locked out.
+        """
+        if not self.two_fa_enabled:
+            return False
+
+        settings = getattr(self, 'two_fa_settings', None)
+        if settings is None:
+            return False
+
+        if not settings.is_enabled:
+            return False
+
+        # A method is "usable" only when it has been verified.
+        if settings.method == settings.TwoFAMethod.TOTP and settings.totp_verified:
+            return True
+        if settings.method == settings.TwoFAMethod.SMS and settings.sms_verified:
+            return True
+        if settings.method == settings.TwoFAMethod.EMAIL and settings.email_verified:
+            return True
+        return False
+
     def is_account_locked(self):
         """Check if account is locked."""
         if self.account_locked_until:

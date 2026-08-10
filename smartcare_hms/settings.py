@@ -14,7 +14,7 @@ import importlib
 try:
     import pkg_resources
 except ModuleNotFoundError:
-    print("⚠️  pkg_resources not found, creating mock in settings...")
+    print("WARNING: pkg_resources not found, creating mock in settings...")
     
     class MockPkgResources:
         @staticmethod
@@ -65,7 +65,7 @@ except ModuleNotFoundError:
     setattr(sys.modules['pkg_resources'], 'DistributionNotFound', DistributionNotFound)
     setattr(sys.modules['pkg_resources'], 'VersionConflict', VersionConflict)
     
-    print("✅ Created mock pkg_resources module in settings")
+    print("OK: Created mock pkg_resources module in settings")
 
 # ============================================
 # Continue with normal settings
@@ -83,6 +83,28 @@ import logging
 from .logging_config import setup_logging
 
 # ============================================
+# SENTRY ERROR MONITORING
+# ============================================
+SENTRY_DSN = config('SENTRY_DSN', default='')
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.redis import RedisIntegration
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            RedisIntegration(),
+        ],
+        traces_sample_rate=config('SENTRY_TRACES_SAMPLE_RATE', default=0.1, cast=float),
+        profiles_sample_rate=config('SENTRY_PROFILES_SAMPLE_RATE', default=0.1, cast=float),
+        send_default_pii=False,
+        environment=config('SENTRY_ENVIRONMENT', default='production' if not DEBUG else 'development'),
+    )
+
+# ============================================
 # BASE DIRECTORY
 # ============================================
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -90,13 +112,28 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ============================================
 # SECURITY
 # ============================================
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production')
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
+
+# In production, fail fast if the secret key is left at an insecure default.
+_SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production')
+if (not DEBUG) and _SECRET_KEY in {
+    'django-insecure-change-this-in-production',
+    'changeme',
+    'secret',
+    'password',
+}:
+    raise RuntimeError(
+        '🚨 SECRET_KEY is insecure/missing. Set a strong SECRET_KEY in production '
+        'before starting the server. Refusing to boot with an insecure key.'
+    )
+SECRET_KEY = _SECRET_KEY
 
 # ============================================
-# ALLOWED HOSTS
+# ALLOWED HOSTS - tightened per environment
 # ============================================
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,admin.smartcarehms.local,lagosgeneral.smartcarehms.local,hms-backend-kmt1.onrender.com').split(',')
+# Only allow known hosts. In production always set ALLOWED_HOSTS explicitly.
+_DEFAULT_ALLOWED_HOSTS = 'localhost,127.0.0.1' if DEBUG else 'hms-backend-kmt1.onrender.com,admin.smartcarehms.local,lagosgeneral.smartcarehms.local'
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default=_DEFAULT_ALLOWED_HOSTS).split(',')
 
 # ============================================
 # APPLICATION DEFINITION
@@ -133,6 +170,7 @@ INSTALLED_APPS = [
     'ward_rounds',
     'ndpr',
     'integration',
+    'superadmin',
 ]
 
 # ============================================
@@ -142,7 +180,8 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
-    # 'smartcare_hms.throttling.RateLimitMiddleware',  # Throttling disabled
+    'smartcare_hms.admin_security.AdminIPRestrictMiddleware',
+    'smartcare_hms.throttling.RateLimitMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -167,13 +206,30 @@ TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [BASE_DIR / 'templates'],
-        'APP_DIRS': True,
+        # APP_DIRS must be False when 'loaders' is explicitly defined below.
+        # These two options are mutually exclusive in Django.
+        'APP_DIRS': False,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.debug',
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+            ],
+            # Standard (non-cached) loaders in DEBUG so templates hot-reload.
+            'loaders': [
+                'django.template.loaders.filesystem.Loader',
+                'django.template.loaders.app_directories.Loader',
+            ] if DEBUG else [
+                # Cache compiled templates in production to avoid re-compiling
+                # on every render.
+                (
+                    'django.template.loaders.cached.Loader',
+                    [
+                        'django.template.loaders.filesystem.Loader',
+                        'django.template.loaders.app_directories.Loader',
+                    ],
+                )
             ],
         },
     },
@@ -268,6 +324,9 @@ DATABASES = {
             'sslmode': DB_SSL_MODE,
             'connect_timeout': 10,
         },
+        # Reuse database connections across requests (connection pooling) to
+        # avoid the overhead of opening a new connection per request.
+        'CONN_MAX_AGE': config('CONN_MAX_AGE', default=60, cast=int),
     }
 }
 
@@ -344,17 +403,30 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ============================================
 # CORS SETTINGS
 # ============================================
-CORS_ALLOW_ALL_ORIGINS = DEBUG
+# Never allow ALL origins. Always use an explicit allowlist.
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in config(
         'CORS_ALLOWED_ORIGINS',
-        default='http://localhost:5173,http://127.0.0.1:5173,http://localhost:9090,http://127.0.0.1:9090'
+        default='http://localhost:5173,http://127.0.0.1:5173,http://admin.localhost:5173,http://localhost:9090,http://127.0.0.1:9090'
     ).split(',')
     if origin.strip()
 ]
 
-CORS_ALLOW_HEADERS = ['*']
+# Tighten allowed headers — never use ['*'] with credentials enabled.
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'x-tenant-id',
+    'x-correlation-id',
+    'x-csrf-token',
+    'origin',
+    'x-subdomain',
+    'x-admin-access',
+]
 CORS_PREFLIGHT_MAX_AGE = 86400
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = (
@@ -373,19 +445,24 @@ CSRF_TRUSTED_ORIGINS = [
     origin.strip()
     for origin in config(
         'CSRF_TRUSTED_ORIGINS',
-        default='http://localhost:5173,http://127.0.0.1:5173,http://localhost:9090,http://127.0.0.1:9090'
+        default='http://localhost:5173,http://127.0.0.1:5173,http://admin.localhost:5173,http://localhost:9090,http://127.0.0.1:9090'
     ).split(',')
     if origin.strip()
 ]
 CSRF_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SAMESITE = 'None'
-CSRF_COOKIE_HTTPONLY = False
+# Use Lax by default; Only relax to None when an explicit env override is set
+# (required only for cross-site frontends, e.g. separate subdomain deployments).
+CSRF_COOKIE_SAMESITE = config('CSRF_COOKIE_SAMESITE', default='Lax')
+# Default HttpOnly=True for defense-in-depth against XSS cookie theft.
+# Frontends must NOT read the CSRF cookie from JS (DRF frontends use JWT/session header).
+CSRF_COOKIE_HTTPONLY = config('CSRF_COOKIE_HTTPONLY', default=True, cast=bool)
 
 # ============================================
 # REST FRAMEWORK SETTINGS
 # ============================================
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'users.authentication.CookieJWTAuthentication',
         'users.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
@@ -399,48 +476,92 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
         'rest_framework.filters.OrderingFilter',
     ],
-    'DEFAULT_THROTTLE_CLASSES': [],
-    'DEFAULT_THROTTLE_RATES': {}
+    # Enable throttling by default (rates configurable via env).
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.ScopedRateThrottle',
+        'smartcare_hms.throttling.UserAPIThrottle',
+        'smartcare_hms.throttling.AnonymousUserThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'api': config('API_THROTTLE_RATE', default='1000/hour'),
+        'anon': config('ANON_THROTTLE_RATE', default='25/hour'),
+        'auth': config('AUTH_THROTTLE_RATE', default='5/min'),
+        'password_reset': config('PASSWORD_RESET_THROTTLE_RATE', default='3/hour'),
+        'password_reset_confirm': config('PASSWORD_RESET_CONFIRM_THROTTLE_RATE', default='5/hour'),
+        'login_attempt': config('LOGIN_ATTEMPT_THROTTLE_RATE', default='5/15min'),
+        '2fa': config('TWO_FA_THROTTLE_RATE', default='5/15min'),
+        'audit': config('AUDIT_THROTTLE_RATE', default='1000/hour'),
+    }
 }
 
 # ============================================
 # JWT SETTINGS
 # ============================================
+# Use a dedicated signing key distinct from Django's SECRET_KEY.
+# In production, fail fast if it is left as an insecure default.
+_JWT_SIGNING_KEY = config('JWT_SIGNING_KEY', default=SECRET_KEY)
+if (not DEBUG) and (_JWT_SIGNING_KEY in {
+    'django-insecure-change-this-in-production',
+    'changeme',
+    'secret',
+    'password',
+} or _JWT_SIGNING_KEY == SECRET_KEY):
+    raise RuntimeError(
+        '🚨 JWT_SIGNING_KEY is insecure or missing. Set a strong, distinct '
+        'JWT_SIGNING_KEY in production before starting the server.'
+    )
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
+    'SIGNING_KEY': _JWT_SIGNING_KEY,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # ============================================
-# CACHE SETTINGS
+# CACHE SETTINGS - Redis-backed for shared cache across workers
 # ============================================
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'unique-snowflake',
+# Redis is REQUIRED in production so that throttle counters, sessions, and
+# cached data are consistent across all Gunicorn workers. In local development
+# a locmem cache is acceptable, but we fail fast in production if REDIS_URL is
+# missing to avoid silently degrading to per-worker/per-process state.
+_REDIS_URL = config('REDIS_URL', default='')
+if (not DEBUG) and not _REDIS_URL:
+    raise RuntimeError(
+        '🚨 REDIS_URL is required in production for consistent rate limiting, '
+        'sessions, and caching. Set REDIS_URL before starting the server.'
+    )
+if _REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': _REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            },
+            'KEY_PREFIX': 'smartcare_hms',
+            'TIMEOUT': 300,
+        }
     }
-}
-
-# For Redis cache (uncomment when ready)
-# CACHES = {
-#     'default': {
-#         'BACKEND': 'django_redis.cache.RedisCache',
-#         'LOCATION': config('REDIS_URL', default='redis://localhost:6379/0'),
-#         'OPTIONS': {
-#             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-#         }
-#     }
-# }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'unique-snowflake',
+        }
+    }
 
 # ============================================
 # SESSION SETTINGS
 # ============================================
-SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+# Use Redis/cache-backed sessions when available to avoid a DB round-trip per
+# request and to share sessions across workers.
+if _REDIS_URL:
+    SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+else:
+    SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_AGE = 3600
 SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_HTTPONLY = True
@@ -451,6 +572,15 @@ SESSION_COOKIE_SAMESITE = 'Lax'
 # ============================================
 SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default='false', cast=bool)
 
+# Trusted proxy configuration: the app MUST sit behind a reverse proxy that
+# terminates TLS and sets HTTPS on the request. This prevents rate-limit and
+# scheme bypass via spoofed X-Forwarded-For / X-Forwarded-Proto headers.
+# Default to a num-proxies of 1 (a single trusted proxy). In production set
+# this to the actual proxy chain length.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = config('USE_X_FORWARDED_HOST', default=True, cast=bool)
+SECURE_PROXY_SSL_HEADER_NUM_PROXIES = config('PROXY_COUNT', default=1, cast=int)
+
 if not DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -459,6 +589,47 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'smartcare_hms.admin_security.AdminIPRestrictMiddleware',
+    'smartcare_hms.throttling.RateLimitMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'django_tenants.middleware.main.TenantMainMiddleware',
+    'tenants.middleware.HeaderTenantMiddleware',
+    'csp.middleware.CSPMiddleware',
+    'smartcare_hms.logging_middleware.CorrelationIdMiddleware',
+    'smartcare_hms.logging_middleware.EnrichLoggingContextMiddleware',
+    'smartcare_hms.logging_middleware.RequestResponseLoggingMiddleware',
+]
+
+CSP_DEFAULT_SRC = ["'self'"]
+CSP_SCRIPT_SRC = ["'self'", "'unsafe-inline'"]
+CSP_STYLE_SRC = ["'self'", "'unsafe-inline'"]
+CSP_IMG_SRC = ["'self'", 'data:']
+CSP_FONT_SRC = ["'self'"]
+CSP_CONNECT_SRC = ["'self'"]
+CSP_FRAME_ANCESTORS = ["'none'"]
+CSP_FORM_ACTION = ["'self'"]
+CSP_INCLUDE_NONCE_IN = ['script-src', 'style-src']
+
+# ============================================
+# ADMIN HARDENING
+# ============================================
+# Optional IP allowlist for the Django admin site. When set to a non-empty
+# comma-separated list, requests to /admin/ are rejected unless the client IP
+# (honouring X-Forwarded-For behind a trusted proxy) is in the allowlist.
+# Leave empty to allow admin access from any IP (not recommended in prod).
+ADMIN_ALLOWED_IPS = [
+    ip.strip() for ip in config('ADMIN_ALLOWED_IPS', default='').split(',') if ip.strip()
+]
 
 # ============================================
 # EMAIL SETTINGS
@@ -477,14 +648,18 @@ SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 # ============================================
 # CELERY SETTINGS
 # ============================================
+CELERY_TASK_ALWAYS_EAGER = False
 if DEBUG:
-    CELERY_TASK_ALWAYS_EAGER = True
     CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='memory://')
 else:
-    CELERY_TASK_ALWAYS_EAGER = False
     CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 
-CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='django-db')
+# Use Redis for the result backend when available to reduce DB writes; fall back
+# to django-db only if explicitly configured (or in dev).
+CELERY_RESULT_BACKEND = config(
+    'CELERY_RESULT_BACKEND',
+    default=(_REDIS_URL if _REDIS_URL else 'django-db'),
+)
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -497,7 +672,22 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 # ============================================
 # ENCRYPTION
 # ============================================
+# Require a strong encryption key. Insecure placeholders are rejected at boot
+# so encrypted fields (2FA secrets, backup codes, RSA private keys) are never
+# left trivially reversible in a production deployment.
 ENCRYPTION_KEY = config('ENCRYPTION_KEY', default='your-32-char-key-for-encryption-change-this')
+_INSECURE_KEYS = {
+    'your-32-char-key-for-encryption-change-this',
+    'changeme',
+    'default-encryption-key-32-chars-long-here',
+    'default',
+}
+if (not DEBUG) and (ENCRYPTION_KEY in _INSECURE_KEYS or '/' in ENCRYPTION_KEY or len(ENCRYPTION_KEY) < 32):
+    raise RuntimeError(
+        '🚨 ENCRYPTION_KEY is missing, weak, or insecure. Set a strong, random '
+        'ENCRYPTION_KEY of at least 32 characters in production before storing '
+        'sensitive data. Refusing to boot with an insecure encryption key.'
+    )
 
 # ============================================
 # SWAGGER SETTINGS

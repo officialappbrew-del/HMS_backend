@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from clinical.views import TenantScopedModelViewSet
+from core.permissions import IsClinicalStaff
 from .models import Ward, Bed, Admission
 from .serializers import AdmissionSerializer
 
@@ -12,7 +13,7 @@ from .serializers import AdmissionSerializer
 class AdmissionManagementViewSet(TenantScopedModelViewSet):
     queryset = Admission.objects.all()
     serializer_class = AdmissionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsClinicalStaff]
 
     def _get_tenant(self, request):
         if hasattr(request.user, 'tenant_user') and request.user.tenant_user:

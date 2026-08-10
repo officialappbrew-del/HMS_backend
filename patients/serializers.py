@@ -96,12 +96,14 @@ class PatientLoginSerializer(serializers.Serializer):
         if not patient:
             raise serializers.ValidationError("Invalid patient identifier or password.")
 
-        fallback_password = patient.hospital_number or patient.login_id or ''
-        if password in ('', fallback_password):
-            data['patient'] = patient
-            return data
+        # Require an actual password. The printed hospital number / login id
+        # must NOT be accepted as a valid fallback password.
+        if not patient.password:
+            raise serializers.ValidationError(
+                "This patient has no password set. Contact the registration desk."
+            )
 
-        if patient.password and patient.check_password(password):
+        if patient.check_password(password):
             data['patient'] = patient
             return data
 

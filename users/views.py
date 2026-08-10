@@ -8,6 +8,10 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Q as models_Q
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+from django.conf import settings
 import pyotp
 import qrcode
 import base64
@@ -33,6 +37,35 @@ from core.permissions import IsSystemAdmin
 from core.models import AuditLog
 from tenants.models import Tenant, TenantUser
 
+
+def _set_auth_cookies(response, access_token, refresh_token=None):
+    """Set HttpOnly, Secure, SameSite=Strict cookies for access and refresh tokens."""
+    if access_token:
+        response.set_cookie(
+            key='access_token',
+            value=access_token,
+            httponly=True,
+            secure=not settings.DEBUG,
+            samesite='Strict',
+            max_age=30 * 60,  # 30 minutes
+            path='/',
+        )
+    if refresh_token:
+        response.set_cookie(
+            key='refresh_token',
+            value=refresh_token,
+            httponly=True,
+            secure=not settings.DEBUG,
+            samesite='Strict',
+            max_age=7 * 24 * 60 * 60,  # 7 days
+            path='/',
+        )
+
+
+def _clear_auth_cookies(response):
+    """Delete auth cookies on logout."""
+    for key in ('access_token', 'refresh_token'):
+        response.delete_cookie(key, path='/')
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -142,6 +175,8 @@ class UserViewSet(viewsets.ModelViewSet):
             user = request.user
             user.set_password(serializer.validated_data['new_password'])
             user.password_changed_at = timezone.now()
+            # Bump token_version to invalidate all previously issued JWTs.
+            user.token_version += 1
             user.save()
             
             # Log security event
@@ -458,11 +493,14 @@ class AuthenticationView(APIView):
         tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
 
         if tenant_domain or tenant_id:
+            logger.info(f"[AUTH] Routing to tenant auth: tenant_domain={tenant_domain} tenant_id={tenant_id}")
             return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id)
 
         if data.get('user_id') and data.get('password'):
+            logger.info(f"[AUTH] Routing to tenant auth by user_id: user_id={data.get('user_id')}")
             return self.authenticate_tenant_user_by_user_id(data, request)
 
+        logger.info(f"[AUTH] Routing to global auth: identifier={data.get('username') or data.get('identifier')}")
         return self.authenticate_global_user(data, request)
     
     def authenticate_tenant_user(self, data, request, tenant_domain=None, tenant_id=None):
@@ -540,6 +578,7 @@ class AuthenticationView(APIView):
             refresh['tenant_public_id'] = str(tenant.public_id)
             refresh['tenant_domain'] = tenant.domain
             refresh['is_tenant_user'] = True
+            refresh['is_superadmin'] = bool(getattr(user, 'is_root_admin', False) or getattr(user, 'role', '') in ('super_admin', 'system_admin'))
 
             return Response({
                 'message': 'Tenant login successful',
@@ -651,6 +690,30 @@ class AuthenticationView(APIView):
             return self._build_tenant_login_response(matched_tenant, matched_user, matched_by)
 
         if len(possible_matches) > 1:
+            # Attempt to disambiguate by matching the request host to a tenant domain.
+            host = ''
+            try:
+                host = request.get_host().split(':')[0].lower()
+            except Exception:
+                host = (request.META.get('HTTP_HOST') or '').split(':')[0].lower()
+
+            for t, u, m in possible_matches:
+                if (t.domain or '').lower() == host and u and u.check_password(password):
+                    return self._build_tenant_login_response(t, u, m)
+
+            # Fallback: try Origin or Referer header to infer tenant domain
+            origin = request.META.get('HTTP_ORIGIN') or request.META.get('HTTP_REFERER') or ''
+            if origin:
+                try:
+                    from urllib.parse import urlparse
+                    o_host = (urlparse(origin).hostname or '').lower()
+                    for t, u, m in possible_matches:
+                        if (t.domain or '').lower() == o_host and u and u.check_password(password):
+                            return self._build_tenant_login_response(t, u, m)
+                except Exception:
+                    pass
+
+            # Still ambiguous: return candidates and prompt client to provide tenant info
             return Response(
                 {
                     'error': 'Ambiguous login. This identifier matches multiple tenants.',
@@ -662,6 +725,7 @@ class AuthenticationView(APIView):
                         }
                         for t, _, _ in possible_matches
                     ],
+                    'message': 'Please include tenant_domain or X-Tenant-ID header to disambiguate.'
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -698,6 +762,7 @@ class AuthenticationView(APIView):
         refresh['tenant_public_id'] = str(tenant.public_id)
         refresh['tenant_domain'] = tenant.domain
         refresh['is_tenant_user'] = True
+        refresh['is_superadmin'] = bool(getattr(user, 'is_root_admin', False) or getattr(user, 'role', '') in ('super_admin', 'system_admin'))
 
         return Response({
             'message': 'Tenant admin login successful',
@@ -731,17 +796,27 @@ class AuthenticationView(APIView):
             'is_tenant_user': True,
         })
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        """Set HttpOnly auth cookies on successful login responses."""
+        if isinstance(response, Response) and response.status_code == 200:
+            data = response.data if hasattr(response, 'data') else None
+            if isinstance(data, dict):
+                tokens = data.get('tokens') or {}
+                access_token = tokens.get('access_token') or data.get('access_token')
+                refresh_token = tokens.get('refresh_token') or data.get('refresh_token')
+                if access_token or refresh_token:
+                    _set_auth_cookies(response, access_token, refresh_token)
+        return super().finalize_response(request, response, *args, **kwargs)
+
     def authenticate_global_user(self, data, request):
         """Authenticate global user."""
-        # Fix: Pass the data dictionary to the serializer
         serializer = LoginSerializer(data=data)
         
         if serializer.is_valid():
             user = serializer.validated_data['user']
             
-            # Check if 2FA is required
             if user.two_fa_enabled:
-                # Generate 2FA verification token
+                logger.info(f"[2FA] 2FA required for user={user.username} id={user.id}")
                 refresh = RefreshToken.for_user(user)
                 refresh['two_fa_required'] = True
                 refresh['two_fa_verified'] = False
@@ -787,6 +862,8 @@ class AuthenticationView(APIView):
             refresh['session_id'] = session.session_key
         refresh['two_fa_verified'] = True
         refresh['is_global_user'] = True
+        refresh['token_version'] = user.token_version
+        refresh['is_superadmin'] = bool(user.is_superuser or user.role in ('super_admin', 'system_admin'))
         
         # Log security event
         SecurityEvent.objects.create(
@@ -927,6 +1004,8 @@ class PasswordResetConfirmView(APIView):
             from django.contrib.auth.hashers import make_password
             user.password = make_password(new_password)
         user.password_changed_at = timezone.now()
+        # Bump token_version to invalidate any previously issued JWTs.
+        user.token_version += 1
         user.save()
         
         reset_token.is_used = True
@@ -950,11 +1029,13 @@ class TwoFAView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
+        logger.info(f"[2FA] Verification attempt for user_id={request.data.get('user_id')} code={request.data.get('code')}")
         serializer = TwoFASerializer(data=request.data)
         
         if serializer.is_valid():
             user = serializer.validated_data['user']
             two_fa_settings = serializer.validated_data['two_fa_settings']
+            logger.info(f"[2FA] SUCCESS for user={user.username} method={serializer.validated_data['method']}")
             
             # Update 2FA settings
             two_fa_settings.last_used = timezone.now()
@@ -975,6 +1056,7 @@ class TwoFAView(APIView):
             refresh = RefreshToken.for_user(user)
             refresh['session_id'] = session.session_key
             refresh['two_fa_verified'] = True
+            refresh['token_version'] = getattr(user, 'token_version', 1)
             
             # Log security event
             SecurityEvent.objects.create(
@@ -1016,6 +1098,7 @@ class TwoFAView(APIView):
         except (GlobalUser.DoesNotExist, User2FA.DoesNotExist):
             pass
         
+        logger.info(f"[2FA] FAILED for user_id={request.data.get('user_id')} errors={serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     def get_client_ip(self, request):
@@ -1458,6 +1541,7 @@ class TenantAwareTokenRefreshSerializer(TokenRefreshSerializer):
         access['is_tenant_user'] = is_tenant_user
         access['user_type'] = 'tenant' if is_tenant_user else 'global'
         access['role'] = getattr(user, 'role', '')
+        access['is_superadmin'] = bool(getattr(user, 'is_superuser', False) or getattr(user, 'role', '') in ('super_admin', 'system_admin'))
         if is_tenant_user:
             access['full_name'] = user.get_full_name()
             access['username'] = user.username
@@ -1474,9 +1558,20 @@ class TenantAwareTokenRefreshSerializer(TokenRefreshSerializer):
 @api_view(['post'])
 @permission_classes([AllowAny])
 def tenant_aware_token_refresh(request):
-    serializer = TenantAwareTokenRefreshSerializer(data=request.data)
+    data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data or {})
+    if not data.get('refresh'):
+        cookie_refresh = request.COOKIES.get('refresh_token')
+        if cookie_refresh:
+            data['refresh'] = cookie_refresh
+    serializer = TenantAwareTokenRefreshSerializer(data=data)
     serializer.is_valid(raise_exception=True)
-    return Response(serializer.validated_data)
+    response = Response(serializer.validated_data)
+    token_data = serializer.validated_data
+    access_token = token_data.get('access') or token_data.get('access_token')
+    refresh_token = token_data.get('refresh') or token_data.get('refresh_token')
+    if access_token or refresh_token:
+        _set_auth_cookies(response, access_token, refresh_token)
+    return response
 
 
 @api_view(['post'])
@@ -1501,4 +1596,6 @@ def logout_view(request):
         user_agent=request.META.get('HTTP_USER_AGENT', ''),
     )
 
-    return Response({'detail': 'Logout successful'}, status=status.HTTP_200_OK)
+    response = Response({'detail': 'Logout successful'}, status=status.HTTP_200_OK)
+    _clear_auth_cookies(response)
+    return response

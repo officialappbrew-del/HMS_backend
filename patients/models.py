@@ -128,6 +128,9 @@ class Patient(BaseModel):
             models.Index(fields=['hospital_number']),
             models.Index(fields=['nhis_number']),
             models.Index(fields=['last_name', 'first_name']),
+            models.Index(fields=['phone']),
+            models.Index(fields=['nin']),
+            models.Index(fields=['tenant', 'is_active', 'patient_status']),
         ]
     
     def save(self, *args, **kwargs):

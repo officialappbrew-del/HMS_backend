@@ -1,0 +1,39 @@
+from django.urls import path
+
+from .views import (
+    PlatformAnalyticsView,
+    TenantAnalyticsView,
+    TenantAdminListView,
+    TenantAdminDetailView,
+    TenantAdminCreateView,
+    TenantToggleView,
+    PlatformUserListView,
+    PlatformUserToggleView,
+    PlatformAuditLogsView,
+    SystemSettingsView,
+    PlatformPatientListView,
+    SubscriptionAnalyticsView,
+    SupportTicketListView,
+    SupportTicketDetailView,
+    GlobalAdminListView,
+    GlobalAdminDetailView,
+)
+
+urlpatterns = [
+    path('analytics/', PlatformAnalyticsView.as_view(), name='superadmin-analytics'),
+    path('tenant-analytics/', TenantAnalyticsView.as_view(), name='superadmin-tenant-analytics'),
+    path('subscriptions/', SubscriptionAnalyticsView.as_view(), name='superadmin-subscription-analytics'),
+    path('tenants/', TenantAdminListView.as_view(), name='superadmin-tenant-list'),
+    path('tenants/create/', TenantAdminCreateView.as_view(), name='superadmin-tenant-create'),
+    path('tenants/<uuid:public_id>/', TenantAdminDetailView.as_view(), name='superadmin-tenant-detail'),
+    path('tenants/<uuid:public_id>/toggle/', TenantToggleView.as_view(), name='superadmin-tenant-toggle'),
+    path('users/', PlatformUserListView.as_view(), name='superadmin-user-list'),
+    path('users/tenant/<uuid:tenant_id>/<int:user_id>/toggle/', PlatformUserToggleView.as_view(), name='superadmin-user-toggle'),
+    path('patients/', PlatformPatientListView.as_view(), name='superadmin-patient-list'),
+    path('audit-logs/', PlatformAuditLogsView.as_view(), name='superadmin-audit-logs'),
+    path('settings/', SystemSettingsView.as_view(), name='superadmin-settings'),
+    path('support-tickets/', SupportTicketListView.as_view(), name='superadmin-support-tickets'),
+    path('support-tickets/<int:ticket_id>/', SupportTicketDetailView.as_view(), name='superadmin-support-ticket-detail'),
+    path('global-admins/', GlobalAdminListView.as_view(), name='superadmin-global-admins'),
+    path('global-admins/<int:admin_id>/', GlobalAdminDetailView.as_view(), name='superadmin-global-admin-detail'),
+]

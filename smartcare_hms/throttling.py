@@ -4,7 +4,7 @@ Rate limiting/throttling configuration for SmartCare HMS API.
 Implements different throttle rates for different endpoints:
 - Authentication endpoints: 5 attempts per minute
 - Password reset: 3 attempts per hour
-- API endpoints: 100 requests per hour per user
+- API endpoints: 1000 requests per hour per user
 - Anonymous users: Limited to prevent abuse
 """
 
@@ -16,6 +16,7 @@ from rest_framework.exceptions import Throttled
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
+import json
 import logging
 import time
 
@@ -39,22 +40,26 @@ class RateLimitMiddleware(MiddlewareMixin):
             return None
 
         identifier = self.get_identifier(request)
-        now = time.time()
+        # Fixed-window counter pattern. When Redis is the cache backend this
+        # uses INCR/EXPIRE atomically so the counter is correct across all
+        # Gunicorn workers and avoids rewriting a whole list per request.
         key = f'ratelimit:{request.method}:{identifier}:{request.path}'
-        bucket = cache.get(key, [])
-        if not isinstance(bucket, list):
-            bucket = []
 
-        bucket = [timestamp for timestamp in bucket if now - timestamp < self.WINDOW_SECONDS]
-        if len(bucket) >= self.MAX_REQUESTS:
+        # Use cache.incr to get an atomic counter when supported.
+        try:
+            count = cache.incr(key)
+        except ValueError:
+            # Key does not exist yet -> set to 1 with the window TTL.
+            cache.set(key, 1, self.WINDOW_SECONDS)
+            count = 1
+
+        if count > self.MAX_REQUESTS:
             logger.warning('Rate limit exceeded for %s on %s', identifier, request.path)
             return JsonResponse(
                 {'detail': 'Too many requests. Please try again shortly.'},
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
-        bucket.append(now)
-        cache.set(key, bucket, self.WINDOW_SECONDS)
         return None
 
     def get_identifier(self, request):
@@ -71,7 +76,7 @@ class RateLimitMiddleware(MiddlewareMixin):
 class AuthenticationThrottle(SimpleRateThrottle):
     """
     Throttle for authentication endpoints (login, password reset).
-    
+
     Rate is configured via the AUTH_THROTTLE_RATE environment variable.
     """
     scope = 'auth'
@@ -80,7 +85,7 @@ class AuthenticationThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """Use submitted login identifier when available, otherwise fallback to IP."""
         username = self.get_login_identifier(request)
@@ -93,14 +98,34 @@ class AuthenticationThrottle(SimpleRateThrottle):
         return request.META.get('REMOTE_ADDR', '')
 
     def get_login_identifier(self, request):
-        if not hasattr(request, 'data'):
-            return None
-        username = request.data.get('username') or request.data.get('identifier') or request.data.get('user_id')
-        if isinstance(username, str):
-            return username.strip().lower()
+        payload = None
+
+        if hasattr(request, 'data'):
+            payload = request.data
+        elif hasattr(request, 'POST') and request.POST:
+            payload = request.POST
+        elif hasattr(request, 'GET') and request.GET:
+            payload = request.GET
+        elif hasattr(request, 'body') and request.body:
+            try:
+                payload = json.loads(request.body.decode('utf-8'))
+            except (TypeError, ValueError, UnicodeDecodeError):
+                payload = None
+
+        if isinstance(payload, dict):
+            username = payload.get('username') or payload.get('identifier') or payload.get('user_id')
+            if isinstance(username, str):
+                return username.strip().lower()
+        elif hasattr(payload, 'get'):
+            username = payload.get('username') or payload.get('identifier') or payload.get('user_id')
+            if isinstance(username, str):
+                return username.strip().lower()
         return None
 
-    def throttle_failure(self, request, wait):
+    def throttle_failure(self, request=None, wait=None):
+        if wait is None:
+            wait = self.wait()
+
         message = 'Too many login attempts. Please try again later.'
         if wait:
             message = f'Too many login attempts. Try again in {int(wait)} seconds.'
@@ -110,7 +135,7 @@ class AuthenticationThrottle(SimpleRateThrottle):
 class PasswordResetThrottle(SimpleRateThrottle):
     """
     Throttle for password reset requests.
-    
+
     Rate is configured via PASSWORD_RESET_THROTTLE_RATE.
     """
     scope = 'password_reset'
@@ -121,7 +146,7 @@ class PasswordResetThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """Get client IP address as identifier."""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -133,7 +158,7 @@ class PasswordResetThrottle(SimpleRateThrottle):
 class PasswordResetConfirmThrottle(SimpleRateThrottle):
     """
     Throttle for password reset confirmation (changing password).
-    
+
     Rate is configured via PASSWORD_RESET_CONFIRM_THROTTLE_RATE.
     """
     scope = 'password_reset_confirm'
@@ -144,7 +169,7 @@ class PasswordResetConfirmThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """Get client IP address as identifier."""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -156,19 +181,19 @@ class PasswordResetConfirmThrottle(SimpleRateThrottle):
 class UserAPIThrottle(SimpleRateThrottle):
     """
     Throttle for general API endpoints.
-    
-    Rate: 100 requests per hour per user (authenticated)
+
+    Rate: 1000 requests per hour per user (authenticated)
            50 requests per hour per IP (anonymous)
     """
     scope = 'api'
     THROTTLE_RATES = {
-        'api': config('API_THROTTLE_RATE', default='100/hour')
+        'api': config('API_THROTTLE_RATE', default='1000/hour')
     }
 
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """
         Use user ID if authenticated, otherwise use IP address.
@@ -176,7 +201,7 @@ class UserAPIThrottle(SimpleRateThrottle):
         user = getattr(request, 'user', None)
         if getattr(user, 'is_authenticated', False):
             return f"user_{user.id}"
-        
+
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
         if x_forwarded_for:
             return f"ip_{x_forwarded_for.split(',')[0].strip()}"
@@ -186,7 +211,7 @@ class UserAPIThrottle(SimpleRateThrottle):
 class AnonymousUserThrottle(AnonRateThrottle):
     """
     Throttle for anonymous users.
-    
+
     Rate: 50 requests per hour per IP address
     """
     scope = 'anon'
@@ -202,7 +227,7 @@ class AnonymousUserThrottle(AnonRateThrottle):
 class LoginAttemptThrottle(SimpleRateThrottle):
     """
     Specific throttle for login attempts.
-    
+
     Rate is configured via LOGIN_ATTEMPT_THROTTLE_RATE.
     """
     scope = 'login_attempt'
@@ -213,7 +238,7 @@ class LoginAttemptThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """Get client IP address as identifier."""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -225,7 +250,7 @@ class LoginAttemptThrottle(SimpleRateThrottle):
 class TwoFAThrottle(SimpleRateThrottle):
     """
     Throttle for 2FA verification attempts.
-    
+
     Rate is configured via TWO_FA_THROTTLE_RATE.
     """
     scope = '2fa'
@@ -236,7 +261,7 @@ class TwoFAThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """Get client IP address as identifier."""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -248,7 +273,7 @@ class TwoFAThrottle(SimpleRateThrottle):
 class AuditTrailThrottle(SimpleRateThrottle):
     """
     Throttle for audit trail and logging endpoints.
-    
+
     Rate is configured via AUDIT_THROTTLE_RATE.
     """
     scope = 'audit'
@@ -259,7 +284,7 @@ class AuditTrailThrottle(SimpleRateThrottle):
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
         return self.cache_format % {'scope': self.scope, 'ident': ident}
-    
+
     def get_ident(self, request):
         """Use user ID if authenticated."""
         user = getattr(request, 'user', None)
@@ -275,7 +300,7 @@ DEFAULT_THROTTLE_CLASSES = [
 ]
 
 DEFAULT_THROTTLE_RATES = {
-    'api': '100/hour',  # General API
+    'api': '1000/hour',  # General API
     'anon': '50/hour',  # Anonymous users
     'auth': '5/min',  # Authentication
     'password_reset': '3/hour',  # Password reset requests

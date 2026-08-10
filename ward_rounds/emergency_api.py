@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import viewsets
 
+from core.permissions import IsClinicalStaff
 from .models import EmergencyCall, AmbulanceMission, ReferralRequest
 from .serializers import EmergencyCallSerializer, AmbulanceMissionSerializer, ReferralRequestSerializer
 
@@ -11,7 +12,7 @@ from .serializers import EmergencyCallSerializer, AmbulanceMissionSerializer, Re
 class EmergencyCallViewSet(viewsets.ModelViewSet):
     queryset = EmergencyCall.objects.all()
     serializer_class = EmergencyCallSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsClinicalStaff]
 
     @action(detail=True, methods=['post'], url_path='dispatch')
     def dispatch_emergency_call(self, request, pk=None):
@@ -37,7 +38,7 @@ class EmergencyCallViewSet(viewsets.ModelViewSet):
 class AmbulanceMissionViewSet(viewsets.ModelViewSet):
     queryset = AmbulanceMission.objects.all()
     serializer_class = AmbulanceMissionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsClinicalStaff]
 
     @action(detail=True, methods=['post'], url_path='update-status')
     def update_status(self, request, pk=None):
@@ -55,7 +56,7 @@ class AmbulanceMissionViewSet(viewsets.ModelViewSet):
 class ReferralRequestViewSet(viewsets.ModelViewSet):
     queryset = ReferralRequest.objects.all()
     serializer_class = ReferralRequestSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsClinicalStaff]
 
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):

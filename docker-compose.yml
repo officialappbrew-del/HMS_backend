@@ -58,7 +58,7 @@ services:
 
   celery:
     build: .
-    command: celery -A config worker --loglevel=info
+    command: celery -A smartcare_hms worker --loglevel=info
     volumes:
       - .:/app
     environment:
@@ -70,7 +70,7 @@ services:
 
   celery-beat:
     build: .
-    command: celery -A config beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A smartcare_hms beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     volumes:
       - .:/app
     environment:

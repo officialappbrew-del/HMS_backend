@@ -33,4 +33,8 @@ RUN adduser --disabled-password --gecos '' django-user \
 USER django-user
 
 # Run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "config.wsgi:application"]
+# - Use gthread worker class so each worker can handle many concurrent connections
+# - Default to 2 workers + 4 threads per worker (tune via GUNICORN_WORKERS/GUNICORN_THREADS)
+# - Run as a non-root user (django-user) for security
+# - Bind to a unix socket via --bind so gunicorn manages lifecycle cleanly
+CMD ["sh", "-c", "gunicorn smartcare_hms.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers ${GUNICORN_WORKERS:-2} --threads ${GUNICORN_THREADS:-4} --worker-class gthread --timeout 120 --max-requests 1000 --max-requests-jitter 100 --access-logfile - --error-logfile -"]

@@ -24,8 +24,8 @@ schema_view = get_schema_view(
         contact=openapi.Contact(email="support@smartcarehms.com"),
         license=openapi.License(name="Proprietary"),
     ),
-    public=True,
-    permission_classes=[permissions.AllowAny],
+    public=False,
+    permission_classes=[permissions.IsAdminUser],
 )
 
 urlpatterns = [
@@ -54,6 +54,7 @@ urlpatterns = [
     path('api/v1/ward-rounds/', include('ward_rounds.urls')),
     path('api/v1/ndpr/', include('ndpr.urls')),
     path('api/v1/integration/', include('integration.urls')),
+    path('api/v1/superadmin/', include('superadmin.urls')),
 ]
 
 # Serve static and media files in development

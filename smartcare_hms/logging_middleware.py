@@ -58,6 +58,36 @@ def get_client_ip(request):
     return ip
 
 
+def get_jwt_payload(request):
+    """
+    Decode and cache the JWT payload on the request so it is verified exactly
+    once per request and reused by all middleware/components. This avoids
+    redundant HMAC signature verification on the hot path.
+    """
+    cached = getattr(request, '_jwt_payload_cache', None)
+    if cached is not None:
+        return cached
+
+    payload = None
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == 'bearer':
+            try:
+                payload = jwt.decode(
+                    parts[1],
+                    settings.SIMPLE_JWT['SIGNING_KEY'],
+                    algorithms=['HS256']
+                )
+            except (jwt.InvalidTokenError, jwt.DecodeError, AttributeError, KeyError):
+                payload = None
+            except Exception:
+                payload = None
+
+    request._jwt_payload_cache = payload
+    return payload
+
+
 def extract_jwt_user_id(request):
     """
     Extract user_id and tenant_id from JWT token in Authorization header.
@@ -65,37 +95,13 @@ def extract_jwt_user_id(request):
     Returns:
         Tuple of (user_id, tenant_id) or (None, None) if no valid token
     """
-    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
-    
-    if not auth_header:
+    payload = get_jwt_payload(request)
+    if payload is None:
         return None, None
-    
-    try:
-        # Extract token from "Bearer <token>" format
-        parts = auth_header.split()
-        if len(parts) != 2 or parts[0].lower() != 'bearer':
-            return None, None
-        
-        token = parts[1]
-        
-        # Decode JWT without verification (just to extract claims for logging)
-        # This is safe for logging purposes - we're not using it for authentication
-        payload = jwt.decode(
-            token,
-            settings.SIMPLE_JWT['SIGNING_KEY'],
-            algorithms=['HS256']
-        )
-        
-        user_id = payload.get('user_id')
-        tenant_id = payload.get('tenant_id') or payload.get('tenant_public_id')
-        
-        return user_id, tenant_id
-    except (jwt.InvalidTokenError, jwt.DecodeError, AttributeError, KeyError):
-        # Token is invalid or settings not configured - ignore silently
-        return None, None
-    except Exception:
-        # Any other error - ignore silently
-        return None, None
+
+    user_id = payload.get('user_id')
+    tenant_id = payload.get('tenant_id') or payload.get('tenant_public_id')
+    return user_id, tenant_id
 
 
 class CorrelationIdMiddleware(MiddlewareMixin):
@@ -141,7 +147,7 @@ class RequestResponseLoggingMiddleware(MiddlewareMixin):
 
     EXCLUDED_PATHS = [
         '/health/',
-        '/metrics/',
+        '/health',
         '/static/',
         '/media/',
     ]
@@ -189,23 +195,20 @@ class RequestResponseLoggingMiddleware(MiddlewareMixin):
         tenant_id_var.set(tenant_id)
         ip_address_var.set(ip_address)
 
-        # Build request log
+        # Build request log (PII redacted: no raw IP, no user agent, no query string.
+        # Only a short path + method + IDs are logged for tracing.)
         request_log = {
             'event': 'request_started',
             'method': method,
-            'path': path,
-            'query_string': request.META.get('QUERY_STRING', ''),
+            'path': path[:200],
             'user_id': user_id,
             'tenant_id': tenant_id,
-            'ip_address': ip_address,
-            'user_agent': request.META.get('HTTP_USER_AGENT', 'N/A'),
         }
 
         # Store context in request for access in response logging
         request._log_context = {
             'user_id': user_id,
             'tenant_id': tenant_id,
-            'ip_address': ip_address,
             'method': method,
             'path': path,
         }
@@ -248,7 +251,10 @@ class RequestResponseLoggingMiddleware(MiddlewareMixin):
         elif status_code >= 400:
             log_level = logging.WARNING
         else:
-            log_level = logging.INFO
+            # Under heavy load, log only a sample of healthy 2xx/3xx responses
+            # to avoid blocking file I/O on the hot path. Slow requests and
+            # all 4xx/5xx responses are always logged.
+            log_level = logging.DEBUG
 
         logger.log(log_level, json.dumps(response_log))
 

@@ -20,7 +20,7 @@ class ConsultationNoteViewSet(TenantScopedModelViewSet):
     permission_classes = [IsDoctor]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related('patient', 'doctor', 'visit')
         visit_id = self.request.query_params.get('visit')
         if visit_id:
             queryset = queryset.filter(visit_id=visit_id)
@@ -39,7 +39,7 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
     permission_classes = [IsDoctorOrPharmacist]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related('patient', 'prescribed_by', 'dispensed_by', 'visit')
         visit_id = self.request.query_params.get('visit')
         if visit_id:
             queryset = queryset.filter(visit_id=visit_id)
@@ -149,6 +149,9 @@ class VitalSignViewSet(TenantScopedModelViewSet):
     serializer_class = VitalSignSerializer
     permission_classes = [IsClinicalStaff]
 
+    def get_queryset(self):
+        return super().get_queryset().select_related('patient', 'recorded_by', 'visit')
+
     def perform_create(self, serializer):
         super().perform_create(serializer)
         user = self.request.user
@@ -160,6 +163,9 @@ class EarlyWarningScoreViewSet(TenantScopedModelViewSet):
     queryset = EarlyWarningScore.objects.all()
     serializer_class = EarlyWarningScoreSerializer
     permission_classes = [IsDoctorOrNurse]
+
+    def get_queryset(self):
+        return super().get_queryset().select_related('patient', 'calculated_by', 'visit')
 
     def perform_create(self, serializer):
         super().perform_create(serializer)
@@ -193,7 +199,7 @@ class VitalSignAlertViewSet(TenantScopedModelViewSet):
     permission_classes = [IsClinicalStaff]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().select_related('patient', 'acknowledged_by', 'resolved_by')
         patient_id = self.request.query_params.get('patient')
         if patient_id:
             queryset = queryset.filter(patient_id=patient_id)

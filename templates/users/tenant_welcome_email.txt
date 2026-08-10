@@ -1,0 +1,17 @@
+Hi {{ admin_name }},
+
+Congratulations! Your account for {{ tenant_name }} has been created successfully.
+
+You can now access the SmartCare HMS platform using the credentials below:
+
+Login URL: {{ login_url }}
+User ID: {{ user_id }}
+Temporary Password: {{ temporary_password }}
+
+Use your User ID and Temporary Password to log in.
+
+For your security, please change your password immediately after logging in. If you have any questions or need assistance, contact your platform administrator.
+
+Welcome aboard! We are excited to have you on board.
+
+© {{ year|default:"" }} {{ tenant_name|default:"SmartCare HMS" }} · Powered by SmartCare HMS

@@ -5,7 +5,7 @@ from .views import (
     CountryViewSet, StateViewSet, LGAViewSet,
     FacilityTypeViewSet, SpecializationViewSet,
     LanguageViewSet, SystemSettingViewSet, AuditLogViewSet,
-    DashboardInsightsViewSet
+    DashboardInsightsViewSet, HealthCheckView
 )
 
 router = DefaultRouter()
@@ -21,4 +21,5 @@ router.register(r'dashboard-insights', DashboardInsightsViewSet, basename='dashb
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('health/', HealthCheckView.as_view(), name='health-check'),
 ]

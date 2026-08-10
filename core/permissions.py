@@ -22,6 +22,34 @@ class IsSystemAdmin(permissions.BasePermission):
         )
 
 
+class IsSuperAdmin(permissions.BasePermission):
+    """Check if user is a super/system admin with platform-level access.
+
+    This is used by the ``/api/v1/superadmin/`` endpoints. It grants access
+    to Django superusers and global users with ``super_admin`` or
+    ``system_admin`` role. The ``X-Admin-Access`` header is also expected for
+    defense-in-depth (the frontend admin subdomain sends it).
+    """
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if user is None or not getattr(user, 'is_authenticated', False):
+            return False
+
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        role = getattr(user, 'role', None)
+        if role in ('super_admin', 'system_admin'):
+            return True
+
+        # Tenant-scoped users (is_tenant_user) are never platform admins.
+        if getattr(user, 'is_tenant_user', False):
+            return False
+
+        return False
+
+
 class IsTenantAdmin(permissions.BasePermission):
     """Check if user is a tenant administrator."""
     
@@ -184,3 +212,73 @@ class HasPermission(permissions.BasePermission):
     
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.has_perm(self.permission_codename)
+
+
+class HasTenantPermission(permissions.BasePermission):
+    """Check if the current global admin has the requested tenant permission flag.
+
+    Usage::
+
+        permission_classes = [IsSuperAdmin, HasTenantPermission('can_create_tenants')]
+
+    The permission flag fields live on ``GlobalUser``. Superusers bypass all checks.
+    """
+
+    def __init__(self, permission_flag):
+        self.permission_flag = permission_flag
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        if getattr(user, self.permission_flag, False):
+            return True
+
+        return False
+
+
+class IsSeniorAdmin(permissions.BasePermission):
+    """Allow access only to senior global admins.
+
+    Seniority is determined by role hierarchy:
+      - ``super_admin`` > ``system_admin`` > ``support`` / ``auditor``
+
+    A senior admin may manage admins of equal or lower seniority, but cannot
+    manage admins of higher seniority. Django superusers bypass all checks.
+    """
+
+    ROLE_HIERARCHY = {
+        'super_admin': 3,
+        'system_admin': 2,
+        'support': 1,
+        'auditor': 1,
+    }
+
+    def _get_role_level(self, user):
+        role = getattr(user, 'role', None)
+        return self.ROLE_HIERARCHY.get(role, 0)
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        role = getattr(user, 'role', None)
+        if role not in self.ROLE_HIERARCHY:
+            return False
+
+        return True
+
+    def can_manage(self, actor, target):
+        if getattr(actor, 'is_superuser', False):
+            return True
+        if actor.id == target.id:
+            return False
+        return self._get_role_level(actor) >= self._get_role_level(target)

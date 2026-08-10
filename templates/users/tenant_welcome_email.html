@@ -1,0 +1,62 @@
+{% extends "emails/base_email.html" %}
+
+{% block title %}Welcome to SmartCare HMS{% endblock %}
+
+{% block subtitle %}Account Created Successfully{% endblock %}
+
+{% block body %}
+<p style="margin: 0 0 12px; font-size: 16px; color:#111827; font-weight: 600;">Hi {{ admin_name }},</p>
+<p style="margin: 0 0 16px; font-size: 14px; color:#374151; line-height: 1.6;">
+  Congratulations! Your account for <strong>{{ tenant_name }}</strong> has been created successfully.
+  You can now access the SmartCare HMS platform using the credentials below.
+</p>
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin: 18px 0;">
+  <tr>
+    <td style="background-color:#f8fafc; border: 1px dashed #cbd5e1; border-radius: 12px; padding: 18px 20px;">
+      <p style="margin:0 0 12px; font-size: 13px; color:#6b7280; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Your Login Credentials</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+          <tr>
+            <td style="padding: 6px 0; font-size: 14px; color:#4b5563;">
+              <strong style="color:#111827;">Login URL:</strong><br/>
+              <a href="{{ login_url }}" style="color:#2563eb; text-decoration:none; font-weight:600;">{{ login_url }}</a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; font-size: 14px; color:#4b5563;">
+              <strong style="color:#111827;">User ID:</strong><br/>
+              <span style="font-family: monospace; font-size: 15px; color:#0f172a; background:#e2e8f0; padding: 2px 8px; border-radius: 4px;">{{ user_id }}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; font-size: 14px; color:#4b5563;">
+              <strong style="color:#111827;">Temporary Password:</strong><br/>
+              <span style="font-family: monospace; font-size: 15px; color:#0f172a; background:#e2e8f0; padding: 2px 8px; border-radius: 4px;">{{ temporary_password }}</span>
+            </td>
+          </tr>
+        </table>
+
+        <p style="margin: 16px 0 0; font-size: 13px; color:#6b7280; line-height: 1.6;">
+          Use your <strong>User ID</strong> and <strong>Temporary Password</strong> to log in.
+        </p>
+    </td>
+  </tr>
+</table>
+
+<p style="margin: 0 0 16px; font-size: 14px; color:#374151; line-height: 1.6;">
+  For your security, please change your password immediately after logging in. If you have any questions or need assistance, contact your platform administrator.
+</p>
+
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top: 28px; border-top: 1px solid #e5e7eb; padding-top: 18px;">
+  <tr>
+    <td>
+      <p style="margin: 0 0 8px; font-size: 13px; color:#4b5563;">
+        Welcome aboard! We are excited to have you on board.
+      </p>
+      <p style="margin: 0; font-size: 13px; color:#6b7280;">
+        &copy; {{ year|default:"" }} {{ tenant_name|default:"SmartCare HMS" }} &middot; Powered by SmartCare HMS
+      </p>
+    </td>
+  </tr>
+</table>
+{% endblock %}

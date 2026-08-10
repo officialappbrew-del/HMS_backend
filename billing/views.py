@@ -22,7 +22,7 @@ class InvoiceViewSet(TenantScopedModelViewSet):
     permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related('patient', 'visit').prefetch_related('items', 'payments', 'claims')
         patient_id = self.request.query_params.get('patient_id')
         status_filter = self.request.query_params.get('status')
         start_date = self.request.query_params.get('start_date')
@@ -103,7 +103,7 @@ class PaymentViewSet(TenantScopedModelViewSet):
     permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related('patient', 'invoice')
         invoice_id = self.request.query_params.get('invoice_id')
         patient_id = self.request.query_params.get('patient_id')
         if invoice_id:
@@ -135,7 +135,7 @@ class InsuranceClaimViewSet(TenantScopedModelViewSet):
     permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().select_related('patient', 'invoice')
         status_filter = self.request.query_params.get('status')
         patient_id = self.request.query_params.get('patient_id')
         if status_filter:
