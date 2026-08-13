@@ -738,6 +738,10 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
 
         # Add or update consultation notes
         from clinical.models import ConsultationNote, Prescription
+        
+        # Clean up any duplicate consultation notes for this visit
+        ConsultationNote.objects.filter(visit=visit).exclude(pk=ConsultationNote.objects.filter(visit=visit).order_by('-created_at').first().pk).delete()
+        
         consultation_note, created = ConsultationNote.objects.update_or_create(
             visit=visit,
             defaults={
@@ -888,7 +892,9 @@ class AppointmentViewSet(TenantScopedModelViewSet):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        appointment = serializer.save()
+        # Use perform_create so TenantScopedModelViewSet injects the tenant
+        self.perform_create(serializer)
+        appointment = serializer.instance
 
         if request.data.get('send_reminder', False):
             _dispatch_appointment_reminder(

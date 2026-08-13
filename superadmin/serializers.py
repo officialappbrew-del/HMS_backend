@@ -246,19 +246,26 @@ class SupportTicketSerializer(serializers.ModelSerializer):
 
 class GlobalAdminSerializer(serializers.ModelSerializer):
     employee_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    role_label = serializers.SerializerMethodField()
 
     class Meta:
         model = GlobalUser
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
-            'role', 'employee_id', 'phone', 'is_active',
-            'can_create_tenants', 'can_suspend_tenants', 'can_delete_tenants',
-            'can_view_all_tenants', 'notes', 'created_by', 'date_joined',
+            'role', 'role_label', 'employee_id', 'phone', 'is_active',
+            'is_superuser', 'can_create_tenants', 'can_suspend_tenants',
+            'can_delete_tenants', 'can_view_all_tenants',
+            'can_manage_admin_permissions', 'notes', 'created_by', 'date_joined',
         ]
         read_only_fields = ['id', 'date_joined']
         extra_kwargs = {
             'password': {'write_only': True},
         }
+
+    def get_role_label(self, obj):
+        if getattr(obj, 'is_superuser', False):
+            return 'Super Admin'
+        return obj.get_role_display()
 
     def validate_employee_id(self, value):
         if value is None:

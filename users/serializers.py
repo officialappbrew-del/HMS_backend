@@ -24,7 +24,8 @@ class GlobalUserSerializer(serializers.ModelSerializer):
             'role', 'employee_id', 'phone', 'is_active', 'is_staff',
             'date_joined', 'last_login', 'two_fa_enabled', 'two_fa_method',
             'last_login_ip', 'can_create_tenants', 'can_suspend_tenants',
-            'can_delete_tenants', 'can_view_all_tenants', 'password', 'confirm_password'
+            'can_delete_tenants', 'can_view_all_tenants', 'is_superuser',
+            'password', 'confirm_password'
         ]
         read_only_fields = [
             'id', 'date_joined', 'last_login', 'last_login_ip',

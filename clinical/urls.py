@@ -3,7 +3,8 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     ConsultationNoteViewSet, PrescriptionViewSet,
-    VitalSignViewSet, EarlyWarningScoreViewSet, VitalSignAlertViewSet
+    VitalSignViewSet, EarlyWarningScoreViewSet, VitalSignAlertViewSet,
+    ICD10CodeViewSet,
 )
 
 router = DefaultRouter()
@@ -12,6 +13,7 @@ router.register(r'prescriptions', PrescriptionViewSet, basename='prescription')
 router.register(r'vital-signs', VitalSignViewSet, basename='vital-sign')
 router.register(r'early-warning-scores', EarlyWarningScoreViewSet, basename='early-warning-score')
 router.register(r'vital-sign-alerts', VitalSignAlertViewSet, basename='vital-sign-alert')
+router.register(r'icd10-codes', ICD10CodeViewSet, basename='icd10-code')
 
 urlpatterns = [
     path('', include(router.urls)),

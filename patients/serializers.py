@@ -199,7 +199,8 @@ class AppointmentSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            validated_data['created_by'] = request.user
+            # Prefer the tenant-scoped user when available
+            validated_data['created_by'] = getattr(request.user, 'tenant_user', None) or request.user
         validated_data.pop('send_reminder', None)
         validated_data.pop('reminder_channels', None)
         validated_data.pop('preferred_channel', None)
@@ -208,7 +209,8 @@ class AppointmentSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            validated_data['updated_by'] = request.user
+            # Prefer the tenant-scoped user when available
+            validated_data['updated_by'] = getattr(request.user, 'tenant_user', None) or request.user
         validated_data.pop('send_reminder', None)
         validated_data.pop('reminder_channels', None)
         validated_data.pop('preferred_channel', None)

@@ -87,6 +87,7 @@ class GlobalUser(AbstractUser):
     can_suspend_tenants = models.BooleanField(default=False)
     can_delete_tenants = models.BooleanField(default=False)
     can_view_all_tenants = models.BooleanField(default=False)
+    can_manage_admin_permissions = models.BooleanField(default=False)
     
     # Metadata
     created_by = models.ForeignKey(

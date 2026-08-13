@@ -1140,13 +1140,18 @@ class GlobalAdminDetailView(APIView):
     """Get, update, or delete a global admin."""
     permission_classes = [IsSuperAdmin, IsSeniorAdmin]
 
+    def _can_access(self, request, admin):
+        if admin.id == request.user.id:
+            return True
+        return IsSeniorAdmin().can_manage(request.user, admin)
+
     def get(self, request, admin_id):
         _ensure_public_schema()
         admin = GlobalUser.objects.filter(id=admin_id).first()
         if not admin:
             return Response({'error': 'Admin not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        if not IsSeniorAdmin().can_manage(request.user, admin):
+        if not self._can_access(request, admin):
             return Response(
                 {'error': 'You do not have permission to manage this admin.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1161,11 +1166,23 @@ class GlobalAdminDetailView(APIView):
         if not admin:
             return Response({'error': 'Admin not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        if not IsSeniorAdmin().can_manage(request.user, admin):
+        if not self._can_access(request, admin):
             return Response(
                 {'error': 'You do not have permission to manage this admin.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        permission_fields = {
+            'can_create_tenants', 'can_suspend_tenants', 'can_delete_tenants',
+            'can_view_all_tenants', 'can_manage_admin_permissions',
+        }
+        requested_permission_changes = permission_fields & set(request.data.keys())
+        if requested_permission_changes:
+            if not getattr(request.user, 'can_manage_admin_permissions', False) and not getattr(request.user, 'is_superuser', False):
+                return Response(
+                    {'error': 'You do not have permission to change admin permissions.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         serializer = GlobalAdminSerializer(admin, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)

@@ -22,7 +22,7 @@ from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup, BulkTenantUserUpload,
-    CommunicationProfile
+    CommunicationProfile, SupportTicket
 )
 from .serializers import (
     TenantSerializer, SubscriptionPlanSerializer, TenantUserSerializer,
@@ -35,6 +35,7 @@ from .serializers import (
 from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
 from core.models import AuditLog
 from users.serializers import PasswordChangeSerializer
+from superadmin.serializers import SupportTicketSerializer
 
 
 from rest_framework.decorators import api_view, permission_classes
@@ -2318,3 +2319,57 @@ class CommunicationProfileViewSet(viewsets.ModelViewSet):
                 tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
             return tenant
         return None
+
+
+class TenantSupportTicketViewSet(viewsets.ModelViewSet):
+    """Tenant-facing support tickets."""
+    serializer_class = SupportTicketSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        tenant = None
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        elif hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+
+        if not tenant:
+            return SupportTicket.objects.none()
+
+        queryset = SupportTicket.objects.filter(tenant=tenant).order_by('-created_at')
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        return queryset
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        tenant = None
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            tenant = user.tenant_user.tenant
+        elif hasattr(user, 'tenant') and user.tenant:
+            tenant = user.tenant
+
+        if not tenant:
+            raise serializers.ValidationError({'tenant': 'Tenant is required.'})
+
+        creator_name = ''
+        creator_email = ''
+        creator_role = 'tenant_admin'
+        if hasattr(user, 'tenant_user') and user.tenant_user:
+            creator_name = user.tenant_user.get_full_name() or user.tenant_user.username
+            creator_email = user.tenant_user.email or ''
+            creator_role = user.tenant_user.role or 'tenant_admin'
+        elif hasattr(user, 'email'):
+            creator_name = user.get_full_name() or user.username
+            creator_email = user.email or ''
+            creator_role = getattr(user, 'role', 'tenant_admin')
+
+        serializer.save(
+            tenant=tenant,
+            created_by_name=creator_name,
+            created_by_email=creator_email,
+            created_by_role=creator_role,
+        )

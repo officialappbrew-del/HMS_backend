@@ -37,7 +37,7 @@ class PrescriptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Prescription
         fields = '__all__'
-        read_only_fields = ['prescribed_date']
+        read_only_fields = ['prescribed_date', 'patient']
 
 
 class VitalSignSerializer(serializers.ModelSerializer):

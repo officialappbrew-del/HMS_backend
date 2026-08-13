@@ -28,6 +28,7 @@ class GlobalUserManager(BaseUserManager):
         extra_fields.setdefault('can_suspend_tenants', True)
         extra_fields.setdefault('can_delete_tenants', True)
         extra_fields.setdefault('can_view_all_tenants', True)
+        extra_fields.setdefault('can_manage_admin_permissions', True)
         
         if extra_fields.get('is_staff') is not True:
             raise ValueError(_('Superuser must have is_staff=True.'))
