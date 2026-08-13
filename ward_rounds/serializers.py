@@ -6,6 +6,7 @@ from .models import (
     OvertimeRecord, PerformanceAppraisal, PerformanceAudit, ResearchOutput,
     TeachingActivity, SatisfactionSurvey, PerformanceIncident
 )
+from tenants.models import TenantUser
 
 
 class WardSerializer(serializers.ModelSerializer):
@@ -229,7 +230,14 @@ class DutyRosterSerializer(serializers.ModelSerializer):
         tenant = validated_data.pop('tenant', None) or self.context.get('tenant')
         roster = DutyRoster.objects.create(tenant=tenant, **validated_data)
         for assignment_data in assignments_data:
-            DutyAssignment.objects.create(roster=roster, **assignment_data)
+            staff_user = None
+            staff_id = assignment_data.get('staff_id')
+            if staff_id and tenant:
+                try:
+                    staff_user = TenantUser.objects.get(employee_id=staff_id, tenant=tenant)
+                except TenantUser.DoesNotExist:
+                    staff_user = None
+            DutyAssignment.objects.create(roster=roster, staff_user=staff_user, **assignment_data)
         return roster
 
 

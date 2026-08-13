@@ -1,6 +1,7 @@
 from rest_framework import permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.utils import timezone
 
 from clinical.views import TenantScopedModelViewSet
 from .models import (
@@ -26,6 +27,7 @@ from .serializers import (
     SatisfactionSurveySerializer,
     PerformanceIncidentSerializer,
 )
+from users.models import UserNotification
 
 
 class DutyRosterViewSet(TenantScopedModelViewSet):
@@ -40,12 +42,76 @@ class DutyRosterViewSet(TenantScopedModelViewSet):
             queryset = queryset.filter(department__icontains=department)
         return queryset
 
+    def _send_assignment_notifications(self, roster):
+        assignments = roster.assignments.select_related('staff_user').all()
+        for assignment in assignments:
+            if not assignment.staff_user or not assignment.staff_user.global_user:
+                continue
+            global_user = assignment.staff_user.global_user
+            UserNotification.objects.create(
+                user=global_user,
+                notification_type='system',
+                priority='medium',
+                title='Duty Roster Assignment',
+                message=f'You have been assigned to {assignment.duty_type} on {assignment.date} for the {roster.department} department ({roster.month} {roster.year}).',
+                data={
+                    'roster_id': roster.roster_id,
+                    'assignment_id': assignment.id,
+                    'date': str(assignment.date),
+                    'duty_type': assignment.duty_type,
+                    'department': roster.department,
+                    'month': roster.month,
+                    'year': roster.year,
+                },
+                sent_via_system=True,
+            )
+
     @action(detail=True, methods=['post'], url_path='publish')
     def publish(self, request, pk=None):
         roster = self.get_object()
+        was_published = roster.status == 'Published'
         roster.status = 'Published'
         roster.save(update_fields=['status', 'updated_at'])
+        if not was_published:
+            self._send_assignment_notifications(roster)
         return Response(DutyRosterSerializer(roster).data)
+
+    @action(detail=False, methods=['get'], url_path='my-rosters')
+    def my_rosters(self, request):
+        user = request.user
+        tenant_user = getattr(user, 'tenant_user', None)
+        if not tenant_user:
+            return Response({'results': []})
+        assignments = DutyAssignment.objects.filter(
+            staff_user=tenant_user,
+            roster__tenant=tenant_user.tenant,
+        ).select_related('roster').order_by('-roster__year', '-roster__month', 'date')
+        roster_map = {}
+        for assignment in assignments:
+            rid = assignment.roster.roster_id
+            if rid not in roster_map:
+                roster_map[rid] = {
+                    id: assignment.roster.id,
+                    rosterId: assignment.roster.roster_id,
+                    month: assignment.roster.month,
+                    year: assignment.roster.year,
+                    department: assignment.roster.department,
+                    status: assignment.roster.status,
+                    assignments: [],
+                }
+            roster_map[rid]['assignments'].append({
+                id: assignment.id,
+                assignmentId: assignment.id,
+                staffId: assignment.staff_id,
+                staffName: assignment.staff_name,
+                staffUserId: assignment.staff_user_id,
+                date: assignment.date.isoformat() if assignment.date else None,
+                dutyType: assignment.duty_type,
+                startTime: assignment.start_time.isoformat() if assignment.start_time else None,
+                endTime: assignment.end_time.isoformat() if assignment.end_time else None,
+                notes: assignment.notes or '',
+            })
+        return Response({'results': list(roster_map.values())})
 
     @action(detail=False, methods=['get'], url_path='on-call')
     def on_call(self, request):
