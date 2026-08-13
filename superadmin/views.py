@@ -5,6 +5,7 @@ oversight for global administrators (super_admin / system_admin / superuser).
 All views require the ``IsSuperAdmin`` permission.
 """
 import logging
+from django.conf import settings
 from django.db import connection
 from django.db.models import Count, Sum, Q
 from django.utils import timezone
@@ -477,8 +478,11 @@ class TenantAdminCreateView(APIView):
 
     def post(self, request):
         _ensure_public_schema()
+        logger.info('🚀 TenantAdminCreateView.post called')
         serializer = TenantCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        root_admin_data = serializer.validated_data.get('root_admin') or {}
+        logger.info(f'Tenant create root_admin_data present={bool(root_admin_data)} keys={list(root_admin_data.keys()) if root_admin_data else []}')
         serializer.save(created_by=request.user)
 
         # Create default settings + communication profile + departments
@@ -507,8 +511,9 @@ class TenantAdminCreateView(APIView):
             new_values={'name': tenant.name, 'domain': tenant.domain},
         )
 
-        root_admin_data = serializer.validated_data.get('root_admin') or {}
+        logger.info(f'🔵 Before root_admin check: tenant={tenant.id} root_admin_data type={type(root_admin_data)} bool={bool(root_admin_data)}')
         if root_admin_data:
+            logger.info(f'🔵 Entered root_admin block for tenant={tenant.id} email={root_admin_data.get("email")}')
             try:
                 root_username = root_admin_data.get('username') or f"{root_admin_data['first_name'].lower()}.{root_admin_data['last_name'].lower()}".replace(' ', '_')
                 unique_username = root_username
@@ -523,6 +528,7 @@ class TenantAdminCreateView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
+                logger.info(f'🔵 Creating admin user with username={unique_username} email={root_admin_data["email"]}')
                 admin_user = TenantUser.objects.create(
                     tenant=tenant,
                     username=unique_username,
@@ -538,6 +544,7 @@ class TenantAdminCreateView(APIView):
                 )
                 admin_user.set_password(root_admin_data['password'])
                 admin_user.save()
+                logger.info(f'🔵 Admin user created id={admin_user.id}')
 
                 AuditLog.objects.create(
                     user=request.user,
@@ -551,21 +558,51 @@ class TenantAdminCreateView(APIView):
                     }
                 )
 
-                # Send welcome email in background
+                logger.info(f'📧 Sending welcome email synchronously to {admin_user.email} for tenant {tenant.name}')
                 try:
-                    from django.conf import settings
-                    from users.tasks import send_tenant_welcome_email_task
+                    import datetime
+                    from django.core.mail import send_mail
+                    from django.template.loader import render_to_string
+                    from tenants.communication import build_email_context, resolve_email_identity
                     login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
-                    send_tenant_welcome_email_task.delay(
-                        recipient_email=admin_user.email,
-                        admin_name=admin_user.get_full_name() or admin_user.username,
-                        tenant_name=tenant.name,
-                        temporary_password=root_admin_data['password'],
-                        login_url=login_url,
-                        user_id=admin_user.id,
+                    base_context = {
+                        'admin_name': admin_user.get_full_name() or admin_user.username,
+                        'tenant_name': tenant.name,
+                        'temporary_password': root_admin_data['password'],
+                        'login_url': login_url,
+                        'user_id': admin_user.employee_id or admin_user.id,
+                        'admin_email': admin_user.email,
+                        'year': datetime.date.today().year,
+                    }
+                    logger.info(f'   Building email context for tenant {tenant.id}')
+                    context = build_email_context(tenant, extra=base_context)
+                    identity = resolve_email_identity(tenant)
+                    from_email = identity['from_email'] or settings.DEFAULT_FROM_EMAIL
+                    from_name = identity['from_name'] or tenant.name
+                    subject = f'Welcome to {tenant.name} - Account Created'
+                    if from_email.lower() == admin_user.email.lower():
+                        logger.warning(f'   ⚠️ from_email ({from_email}) matches recipient email; SMTP servers often reject or silently drop same-from-to messages.')
+                        fallback_from = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+                        if fallback_from and fallback_from.lower() != admin_user.email.lower():
+                            from_email = fallback_from
+                            logger.info(f'   Fallback from_email to {from_email}')
+                    logger.info(f'   Rendering email templates...')
+                    html_message = render_to_string('users/tenant_welcome_email.html', context)
+                    plain_message = render_to_string('users/tenant_welcome_email.txt', context)
+                    logger.info(f'   SMTP settings: host={identity.get("host")} port={identity.get("port")} username={identity.get("username")} use_tls={identity.get("use_tls")}')
+                    logger.info(f'   Sending email via {settings.EMAIL_BACKEND} from={from_name} <{from_email}> to={admin_user.email}')
+                    send_mail(
+                        subject=subject,
+                        message=plain_message,
+                        from_email=f'{from_name} <{from_email}>',
+                        recipient_list=[admin_user.email],
+                        html_message=html_message,
+                        fail_silently=False,
                     )
-                except Exception as exc:
-                    logger.warning(f'Failed to queue tenant welcome email: {exc}')
+                    logger.info(f'✅ Tenant welcome email sent synchronously to {admin_user.email}')
+                except Exception as sync_exc:
+                    logger.error(f'❌ Failed to send tenant welcome email synchronously to {admin_user.email}: {sync_exc}')
+                    logger.exception(sync_exc)
 
             except Exception as exc:
                 logger.error(f'Failed to create root admin: {exc}')
