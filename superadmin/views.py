@@ -573,6 +573,7 @@ class TenantAdminCreateView(APIView):
                         'user_id': admin_user.employee_id or admin_user.id,
                         'admin_email': admin_user.email,
                         'year': datetime.date.today().year,
+                        'app_name': settings.APP_NAME,
                     }
                     logger.info(f'   Building email context for tenant {tenant.id}')
                     context = build_email_context(tenant, extra=base_context)

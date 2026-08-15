@@ -8,7 +8,7 @@
 <p style="margin: 0 0 12px; font-size: 16px; color:#111827; font-weight: 600;">Hi {{ admin_name }},</p>
 <p style="margin: 0 0 16px; font-size: 14px; color:#374151; line-height: 1.6;">
   Congratulations! Your account for <strong>{{ tenant_name }}</strong> has been created successfully.
-  You can now access the SmartCare HMS platform using the credentials below.
+  You can now access the {{ tenant_name|default:app_name }} platform using the credentials below.
 </p>
 
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin: 18px 0;">
@@ -54,7 +54,7 @@
         Welcome aboard! We are excited to have you on board.
       </p>
       <p style="margin: 0; font-size: 13px; color:#6b7280;">
-        &copy; {{ year|default:"" }} {{ tenant_name|default:"SmartCare HMS" }} &middot; Powered by SmartCare HMS
+         &copy; {{ year|default:"" }} {{ tenant_name|default:app_name }} &middot; Powered by {{ app_name }}
       </p>
     </td>
   </tr>

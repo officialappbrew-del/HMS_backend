@@ -53,6 +53,7 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
             'reset_token': reset_token,
             'reset_url': f'{settings.FRONTEND_URL}/reset-password?token={reset_token}' if hasattr(settings, 'FRONTEND_URL') else None,
             'expiry_hours': 1,
+            'app_name': settings.APP_NAME,
         }
 
         tenant = _resolve_tenant_from_context(recipient_email, user_name)
@@ -137,6 +138,7 @@ def send_tenant_welcome_email_task(self, recipient_email, admin_name, tenant_nam
             'user_id': user_id or '',
             'admin_email': recipient_email,
             'year': datetime.date.today().year,
+            'app_name': settings.APP_NAME,
         }
 
         tenant = None

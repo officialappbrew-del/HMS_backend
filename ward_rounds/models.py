@@ -157,8 +157,12 @@ class DutyRoster(BaseModel):
             if self.id:
                 self.roster_id = f"ROSTER{self.id}"
             else:
+                import uuid
+                self.roster_id = f"TEMP-{uuid.uuid4().hex[:8].upper()}"
                 super().save(*args, **kwargs)
                 self.roster_id = f"ROSTER{self.id}"
+                super().save(update_fields=['roster_id'])
+                return
         super().save(*args, **kwargs)
 
 

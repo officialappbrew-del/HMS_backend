@@ -161,6 +161,60 @@ class RosterPerformanceSerializerTests(TestCase):
         self.assertEqual(roster.assignments.count(), 1)
         self.assertEqual(roster.assignments.first().staff_id, 'DR001')
 
+    def test_duty_roster_serializer_update_preserves_untouched_assignments(self):
+        roster = DutyRosterSerializer(data={
+            'month': 'January',
+            'year': 2026,
+            'department': 'Internal Medicine',
+            'status': 'Draft',
+            'assignments': [
+                {
+                    'staffId': 'DR001',
+                    'staffName': 'Dr. Ada Okafor',
+                    'date': '2026-01-05',
+                    'dutyType': 'Call Duty',
+                    'startTime': '07:00',
+                    'endTime': '19:00',
+                    'notes': 'Primary ward' 
+                },
+                {
+                    'staffId': 'DR002',
+                    'staffName': 'Dr. Bassey',
+                    'date': '2026-01-06',
+                    'dutyType': 'Night Duty',
+                    'startTime': '19:00',
+                    'endTime': '07:00',
+                    'notes': 'Backup' 
+                }
+            ]
+        })
+        self.assertTrue(roster.is_valid(), roster.errors)
+        saved_roster = roster.save(tenant=self.tenant)
+
+        update_payload = {
+            'month': 'January',
+            'year': 2026,
+            'department': 'Internal Medicine',
+            'status': 'Draft',
+            'assignments': [{
+                'id': saved_roster.assignments.first().id,
+                'staffId': 'DR001',
+                'staffName': 'Dr. Ada Okafor',
+                'date': '2026-01-05',
+                'dutyType': 'Call Duty',
+                'startTime': '07:00',
+                'endTime': '19:00',
+                'notes': 'Updated primary ward'
+            }]
+        }
+
+        serializer = DutyRosterSerializer(instance=saved_roster, data=update_payload, partial=True)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        updated_roster = serializer.save()
+
+        self.assertEqual(updated_roster.assignments.count(), 2)
+        self.assertEqual(updated_roster.assignments.filter(staff_id='DR002').count(), 1)
+
     def test_performance_appraisal_serializer_creates_with_camel_case_fields(self):
         serializer = PerformanceAppraisalSerializer(data={
             'staffId': 'DR001',

@@ -719,28 +719,37 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
     
     @action(detail=True, methods=['post'])
     def end_consultation(self, request, pk=None):
-        """End consultation."""
+        """End consultation and persist full clinical documentation."""
         visit = self.get_object()
         
-        # Check permissions
         user = request.user
         if not hasattr(user, 'tenant_user') or user.tenant_user.role != 'doctor':
             raise permissions.PermissionDenied("Only doctors can end consultations")
         
-        # End consultation
+        # Update visit with consultation data and disposition
         visit.chief_complaint = request.data.get('chief_complaint', visit.chief_complaint)
         visit.history_of_present_illness = request.data.get('history_of_present_illness', visit.history_of_present_illness)
         visit.referral_from = request.data.get('referral_from', visit.referral_from)
         visit.referral_reason = request.data.get('referral_reason', visit.referral_reason)
         visit.consultation_end_time = timezone.now()
         visit.visit_status = request.data.get('next_status', 'awaiting_lab')
+        
+        # Disposition & Follow-up
+        visit.disposition_type = request.data.get('disposition_type', visit.disposition_type)
+        visit.disposition_reason = request.data.get('disposition_reason', visit.disposition_reason)
+        visit.admission_required = request.data.get('admission_required', visit.admission_required)
+        visit.follow_up_date = request.data.get('follow_up_date', visit.follow_up_date)
+        visit.follow_up_time = request.data.get('follow_up_time', visit.follow_up_time)
+        visit.follow_up_reason = request.data.get('follow_up_reason', visit.follow_up_reason)
+        
         visit.save()
-
-        # Add or update consultation notes
+        
+        # Create or update comprehensive consultation note
         from clinical.models import ConsultationNote, Prescription
         
-        # Clean up any duplicate consultation notes for this visit
-        ConsultationNote.objects.filter(visit=visit).exclude(pk=ConsultationNote.objects.filter(visit=visit).order_by('-created_at').first().pk).delete()
+        latest_note = ConsultationNote.objects.filter(visit=visit).order_by('-created_at').first()
+        if latest_note:
+            ConsultationNote.objects.filter(visit=visit).exclude(pk=latest_note.pk).delete()
         
         consultation_note, created = ConsultationNote.objects.update_or_create(
             visit=visit,
@@ -748,17 +757,35 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                 'tenant': visit.tenant,
                 'patient': visit.patient,
                 'doctor': user.tenant_user,
+                'chief_complaint': request.data.get('chief_complaint', ''),
+                'history_of_present_illness': request.data.get('history_of_present_illness', ''),
                 'subjective': request.data.get('subjective', ''),
                 'objective': request.data.get('objective', ''),
                 'assessment': request.data.get('assessment', ''),
                 'plan': request.data.get('plan', ''),
                 'diagnosis_codes': request.data.get('diagnosis_codes', []),
                 'differential_diagnosis': request.data.get('differential_diagnosis', ''),
+                'ice_ideas': request.data.get('ice_ideas', ''),
+                'ice_concerns': request.data.get('ice_concerns', ''),
+                'ice_expectations': request.data.get('ice_expectations', ''),
+                'past_medical_history': request.data.get('past_medical_history', {}),
+                'family_history': request.data.get('family_history', {}),
+                'social_history': request.data.get('social_history', {}),
+                'physical_exam': request.data.get('physical_exam', {}),
+                'disposition_type': request.data.get('disposition_type', ''),
+                'disposition_reason': request.data.get('disposition_reason', ''),
+                'admission_required': request.data.get('admission_required', False),
+                'follow_up_date': request.data.get('follow_up_date'),
+                'follow_up_time': request.data.get('follow_up_time'),
+                'follow_up_reason': request.data.get('follow_up_reason', ''),
+                'billing_items': request.data.get('billing_items', []),
+                'insurance_covered': request.data.get('insurance_covered', False),
+                'insurance_amount': request.data.get('insurance_amount', 0),
                 'is_final': request.data.get('is_final', True)
             }
         )
-
-        # Create any prescriptions from submitted payload
+        
+        # Create prescriptions (auto-approved by doctor)
         prescriptions = request.data.get('prescriptions', [])
         for prescription_data in prescriptions:
             Prescription.objects.create(
@@ -773,10 +800,10 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                 route=prescription_data.get('route', 'oral'),
                 instructions=prescription_data.get('instructions', ''),
                 special_instructions=prescription_data.get('special_instructions', ''),
-                status=prescription_data.get('status', 'prescribed')
+                status='dispensed'
             )
-
-        # Persist laboratory orders requested during consultation
+        
+        # Create lab orders (auto-approved)
         lab_orders = request.data.get('lab_orders', [])
         if lab_orders:
             from lab.models import LabOrder, LabTest
@@ -804,7 +831,7 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                             turnaround_time=24,
                             price=0
                         )
-
+                
                 LabOrder.objects.create(
                     tenant=visit.tenant,
                     patient=visit.patient,
@@ -812,11 +839,11 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                     order_number=f"LO-{timezone.now().strftime('%Y%m%d%H%M%S%f')}-{visit.id}-{order_index}",
                     test=test,
                     clinical_notes=order_data.get('clinical_notes', ''),
-                    status=order_data.get('status', 'ordered'),
+                    status='in_progress',
                     priority=order_data.get('priority', 'routine'),
                     ordered_by=user.tenant_user
                 )
-
+        
         # Persist radiology, procedure, and referral requests as patient documents
         radiology_orders = request.data.get('radiology_orders', [])
         procedure_orders = request.data.get('procedure_orders', [])
@@ -828,7 +855,7 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                     patient=visit.patient,
                     document_type='radiology',
                     title=order_data.get('study', f'Radiology order {index}'),
-                    description=(f"Priority: {order_data.get('priority', 'routine')}\n" + order_data.get('notes', '')).strip(),
+                    description=(f"Priority: {order_data.get('priority', 'routine')}\nStatus: Approved\n" + order_data.get('notes', '')).strip(),
                     uploaded_by=user.tenant_user,
                     document_date=timezone.now().date()
                 )
@@ -838,7 +865,7 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                     patient=visit.patient,
                     document_type='other',
                     title=f"Procedure: {order_data.get('procedure', 'Procedure order')}",
-                    description=(f"Priority: {order_data.get('priority', 'routine')}\n" + order_data.get('notes', '')).strip(),
+                    description=(f"Priority: {order_data.get('priority', 'routine')}\nStatus: Approved\n" + order_data.get('notes', '')).strip(),
                     uploaded_by=user.tenant_user,
                     document_date=timezone.now().date()
                 )
@@ -847,12 +874,12 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                     tenant=visit.tenant,
                     patient=visit.patient,
                     document_type='referral',
-                    title=order_data.get('referral', f'Referral order {index}') ,
-                    description=(f"Priority: {order_data.get('priority', 'routine')}\n" + order_data.get('notes', '')).strip(),
+                    title=order_data.get('referral', f'Referral order {index}'),
+                    description=(f"Priority: {order_data.get('priority', 'routine')}\nStatus: Approved\n" + order_data.get('notes', '')).strip(),
                     uploaded_by=user.tenant_user,
                     document_date=timezone.now().date()
                 )
-
+        
         # Create billing invoice if billing items exist
         billing_items = request.data.get('billing_items', [])
         if billing_items:
@@ -876,8 +903,7 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                 insurance_amount=request.data.get('insurance_amount', 0),
                 patient_amount=subtotal - float(request.data.get('insurance_amount', 0) or 0)
             )
-            # A lightweight invoice item list may be added here if the model supports it.
-
+        
         serializer = self.get_serializer(visit)
         return Response(serializer.data)
 

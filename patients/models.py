@@ -317,6 +317,14 @@ class PatientVisit(BaseModel):
     referral_reason = models.TextField(blank=True)
     notes = models.TextField(blank=True)
     
+    # Disposition & Follow-up
+    disposition_type = models.CharField(max_length=20, blank=True)
+    disposition_reason = models.TextField(blank=True)
+    admission_required = models.BooleanField(default=False)
+    follow_up_date = models.DateField(null=True, blank=True)
+    follow_up_time = models.TimeField(null=True, blank=True)
+    follow_up_reason = models.TextField(blank=True)
+    
     def __str__(self):
         return f"Visit {self.visit_number} - {self.patient.get_full_name()}"
     

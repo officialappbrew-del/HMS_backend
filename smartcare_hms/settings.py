@@ -129,6 +129,11 @@ if (not DEBUG) and _SECRET_KEY in {
 SECRET_KEY = _SECRET_KEY
 
 # ============================================
+# APPLICATION IDENTITY
+# ============================================
+APP_NAME = config('APP_NAME', default='SmartCare HMS')
+
+# ============================================
 # ALLOWED HOSTS - tightened per environment
 # ============================================
 # Only allow known hosts. In production always set ALLOWED_HOSTS explicitly.
@@ -215,6 +220,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'smartcare_hms.context_processors.app_name',
             ],
             # Standard (non-cached) loaders in DEBUG so templates hot-reload.
             'loaders': [

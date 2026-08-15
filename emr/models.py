@@ -56,8 +56,12 @@ class MedicalRecord(BaseModel):
     
     def generate_record_number(self):
         from django.utils import timezone
+        import random
         date_str = (self.created_at or timezone.now()).strftime('%Y%m%d')
-        return f"EMR-{date_str}-{self.pk or 'ID'}"
+        if self.pk:
+            return f"EMR-{date_str}-{self.pk}"
+        suffix = ''.join(random.choices('0123456789ABCDEF', k=8))
+        return f"EMR-{date_str}-{suffix}"
 
 
 class ProgressNote(BaseModel):

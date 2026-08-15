@@ -3,54 +3,330 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}{{ tenant_name|default:"SmartCare HMS" }}{% endblock %}</title>
+  <title>{% block title %}{{ tenant_name|default:app_name }}{% endblock %}</title>
+  <style>
+    /* ===== RESET & BASE ===== */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #F6F2E7;
+      font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .wrapper {
+      width: 100%;
+      table-layout: fixed;
+      background-color: #F6F2E7;
+      padding: 40px 0 32px;
+    }
+    .main-card {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 28px -14px rgba(13, 25, 23, 0.18);
+      border: 1px solid rgba(28, 43, 39, 0.08);
+    }
+
+    /* ===== HEADER – dark clinical with gold accent (matches login aside) ===== */
+    .header-gradient {
+      background: #0D1917;
+      padding: 32px 36px 26px;
+      text-align: center;
+      position: relative;
+    }
+    .header-gradient::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, #C79A3D, #e8c87a, #C79A3D);
+      opacity: 0.4;
+    }
+
+    /* subtle grid texture like login page */
+    .header-gradient::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0.04;
+      background-image:
+        linear-gradient(to right, #EFEBDD 1px, transparent 1px),
+        linear-gradient(to bottom, #EFEBDD 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+    }
+
+    .logo-img {
+      display: block;
+      margin: 0 auto 14px;
+      width: 72px;
+      height: 72px;
+      border-radius: 12px;
+      object-fit: cover;
+      background: #ffffff;
+      padding: 5px;
+      box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(199, 154, 61, 0.25);
+      position: relative;
+      z-index: 2;
+    }
+    .brand-title {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+      color: #F6F2E7;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+      font-family: 'Lora', 'Georgia', serif;
+      position: relative;
+      z-index: 2;
+    }
+    .brand-title .accent {
+      color: #C79A3D;
+    }
+    .brand-sub {
+      margin: 8px 0 0;
+      font-size: 11px;
+      font-weight: 400;
+      color: #A9C0B6;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      font-family: 'IBM Plex Mono', 'Courier New', monospace;
+      position: relative;
+      z-index: 2;
+    }
+
+    /* ===== BODY – colorful gradient + gold accents ===== */
+    .body-content {
+      padding: 36px 36px 28px;
+      background: linear-gradient(145deg, #fefbf6 0%, #f4ede0 100%);
+      color: #1C2B27;
+      border-bottom: 2px solid #e3d5be;
+    }
+    .body-content h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin: 0 0 14px;
+      color: #1C2B27;
+      letter-spacing: -0.2px;
+      font-family: 'Lora', 'Georgia', serif;
+      border-left: 6px solid #C79A3D;
+      padding-left: 16px;
+      background: linear-gradient(to right, rgba(199, 154, 61, 0.08), transparent);
+    }
+    .body-content p {
+      font-size: 14px;
+      line-height: 1.7;
+      margin: 0 0 16px;
+      color: #3d554d;
+    }
+    .body-content .highlight-box {
+      background: linear-gradient(135deg, #fbf6ea 0%, #f3e9d6 100%);
+      border-left: 4px solid #C79A3D;
+      padding: 16px 20px;
+      border-radius: 10px;
+      margin: 20px 0 18px;
+      box-shadow: inset 0 1px 4px rgba(199, 154, 61, 0.12);
+    }
+    .body-content .highlight-box p {
+      margin: 0;
+      font-size: 13px;
+      color: #1C2B27;
+    }
+    .body-content .highlight-box strong {
+      color: #0D1917;
+      font-weight: 600;
+    }
+
+    /* ===== BUTTON – dark green with subtle glow ===== */
+    .btn-primary {
+      display: inline-block;
+      background: #16302A;
+      color: #F6F2E7 !important;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 32px;
+      border-radius: 40px;
+      box-shadow: 0 2px 8px -2px rgba(22, 48, 42, 0.25);
+      letter-spacing: 0.3px;
+      margin: 4px 0 8px;
+      transition: background 0.2s ease;
+      font-family: 'Inter', system-ui, sans-serif;
+      border: 1px solid rgba(199, 154, 61, 0.15);
+    }
+    .btn-primary:hover {
+      background: #1C3B33;
+      box-shadow: 0 4px 12px -2px rgba(22, 48, 42, 0.3);
+    }
+
+    .divider-light {
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #dcc9ad, #C79A3D, #dcc9ad, transparent);
+      margin: 22px 0 18px;
+      opacity: 0.35;
+    }
+
+    /* ===== FOOTER – fully colorful warm gradient ===== */
+    .footer-meta {
+      background: linear-gradient(135deg, #e8ddd0 0%, #dbcfbe 100%);
+      border-top: 2px solid #cbb99f;
+      padding: 20px 36px 24px;
+      text-align: center;
+      box-shadow: inset 0 4px 10px rgba(199, 154, 61, 0.06);
+    }
+    .footer-meta p {
+      margin: 0 0 4px;
+      font-size: 12px;
+      color: #2f3f3a;
+      letter-spacing: 0.1px;
+      font-weight: 500;
+    }
+    .footer-meta .small-note {
+      font-size: 11px;
+      color: #4d625a;
+      line-height: 1.6;
+      background: rgba(255, 248, 235, 0.35);
+      padding: 6px 14px;
+      border-radius: 40px;
+      display: inline-block;
+      margin-top: 4px;
+    }
+    .footer-meta .small-note a {
+      color: #1d3d34;
+      text-decoration: none;
+      font-weight: 600;
+      border-bottom: 1px dashed #a7752b;
+    }
+    .footer-meta .small-note a:hover {
+      text-decoration: none;
+      border-bottom: 2px solid #C79A3D;
+    }
+
+    /* decorative footer dots */
+    .footer-dots {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .footer-dots span {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 20px;
+      background: #b5976f;
+      opacity: 0.3;
+    }
+    .footer-dots span:nth-child(2) {
+      background: #C79A3D;
+      opacity: 0.6;
+      width: 24px;
+    }
+    .footer-dots span:nth-child(3) {
+      background: #5f7a6e;
+      opacity: 0.4;
+    }
+
+    /* ===== RESPONSIVE ===== */
+    @media only screen and (max-width: 480px) {
+      .header-gradient { padding: 26px 22px 20px; }
+      .body-content { padding: 26px 22px 22px; }
+      .footer-meta { padding: 18px 22px 22px; }
+      .brand-title { font-size: 20px; }
+      .btn-primary {
+        padding: 12px 24px;
+        font-size: 13px;
+        display: block;
+        text-align: center;
+      }
+      .footer-meta .small-note {
+        display: block;
+        padding: 8px 12px;
+      }
+    }
+
+    /* Outlook fallback */
+    .btn-fallback {
+      background: #16302A;
+      color: #F6F2E7;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      padding: 12px 32px;
+      border-radius: 40px;
+      display: inline-block;
+    }
+  </style>
 </head>
-<body style="margin:0; padding:0; background-color:#f3f4f6; font-family: 'Segoe UI', Arial, Helvetica, sans-serif; -webkit-font-smoothing: antialiased;">
-  <center role="presentation" style="width:100%; table-layout:fixed; background-color:#f3f4f6; padding:24px 0;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f3f4f6;">
-      <tr>
-        <td align="center">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.06);">
+<body style="margin:0; padding:0; background-color:#F6F2E7; font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
 
-            <!-- ===== BRANDED HEADER ===== -->
-            <tr>
-              <td style="background: linear-gradient(135deg, #2563eb, #0284c7); padding: 28px 32px; text-align: center;">
-                {% if tenant_logo_url %}
-                <img src="{{ tenant_logo_url }}" alt="{{ tenant_name }}" width="64" height="64" style="display:block; margin:0 auto 12px; width:64px; height:64px; border-radius:12px; object-fit:cover; border:2px solid rgba(255,255,255,0.35);" />
-                {% endif %}
-                <h1 style="margin:0; font-size: 22px; color: #ffffff; letter-spacing: 0.3px; font-weight: 700;">
-                  {{ tenant_name|default:"SmartCare HMS" }}
-                </h1>
-                <p style="margin:6px 0 0; font-size: 13px; color:#e0f2fe; letter-spacing: 0.4px;">
-                  {% block subtitle %}Secure Healthcare Communication{% endblock %}
-                </p>
-              </td>
-            </tr>
+<center role="presentation" class="wrapper" style="width:100%; table-layout:fixed; background-color:#F6F2E7; padding:40px 0 32px;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#F6F2E7;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" class="main-card" style="max-width:600px; margin:0 auto; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 1px 2px rgba(0,0,0,0.04), 0 12px 28px -14px rgba(13,25,23,0.18); border:1px solid rgba(28,43,39,0.08);">
 
-            <!-- ===== BODY ===== -->
-            <tr>
-              <td style="padding: 32px 32px 24px; color:#1f2937;">
-                {% block body %}
-                {% endblock %}
-              </td>
-            </tr>
+          <!-- ===== HEADER – dark with gold accent (matches login aside) ===== -->
+          <tr>
+            <td class="header-gradient" style="background:#0D1917; padding:32px 36px 26px; text-align:center; position:relative;">
+              {% if tenant_logo_url %}
+              <img src="{{ tenant_logo_url }}" alt="{{ tenant_name }}" width="72" height="72" style="display:block; margin:0 auto 14px; width:72px; height:72px; border-radius:12px; object-fit:cover; background:#ffffff; padding:5px; box-shadow:0 8px 20px -8px rgba(0,0,0,0.25); border:1px solid rgba(199,154,61,0.25); position:relative; z-index:2;" />
+              {% endif %}
+              <h1 class="brand-title" style="margin:0; font-size:24px; font-weight:600; letter-spacing:-0.2px; color:#F6F2E7; text-shadow:0 2px 6px rgba(0,0,0,0.08); font-family:'Lora','Georgia',serif; position:relative; z-index:2;">
+                {{ tenant_name|default:app_name }}<span class="accent" style="color:#C79A3D;">HMS</span>
+              </h1>
+              <p class="brand-sub" style="margin:8px 0 0; font-size:11px; font-weight:400; color:#A9C0B6; letter-spacing:0.2em; text-transform:uppercase; font-family:'IBM Plex Mono','Courier New',monospace; position:relative; z-index:2;">
+                {% block subtitle %}Secure Healthcare Communication{% endblock %}
+              </p>
+            </td>
+          </tr>
 
-            <!-- ===== FOOTER ===== -->
-            <tr>
-              <td style="background-color:#f8fafc; border-top:1px solid #e5e7eb; padding: 20px 32px; text-align: center;">
-                <p style="margin:0 0 6px; font-size: 13px; color:#4b5563;">
-                  &copy; {{ year|default:"" }} {{ tenant_name|default:"SmartCare HMS" }} &middot; All rights reserved
-                </p>
-                <p style="margin:0; font-size: 12px; color:#9ca3af; line-height:1.5;">
-                  This is an automated message from {{ tenant_name|default:"SmartCare HMS" }}. Please do not reply directly to this email.
-                </p>
-              </td>
-            </tr>
+          <!-- ===== BODY – colorful gradient background ===== -->
+          <tr>
+            <td class="body-content" style="padding:36px 36px 28px; background:linear-gradient(145deg, #fefbf6 0%, #f4ede0 100%); color:#1C2B27; border-bottom:2px solid #e3d5be;">
+              {% block body %}
+              {% endblock %}
+            </td>
+          </tr>
 
-          </table>
-        </td>
-      </tr>
-    </table>
-  </center>
+          <!-- ===== FOOTER – fully colorful warm gradient ===== -->
+          <tr>
+            <td class="footer-meta" style="background:linear-gradient(135deg, #e8ddd0 0%, #dbcfbe 100%); border-top:2px solid #cbb99f; padding:20px 36px 24px; text-align:center; box-shadow:inset 0 4px 10px rgba(199,154,61,0.06);">
+              <!-- decorative dots -->
+              <div class="footer-dots" style="display:flex; justify-content:center; gap:8px; margin-bottom:12px;">
+                <span style="display:inline-block; width:8px; height:8px; border-radius:20px; background:#b5976f; opacity:0.3;"></span>
+                <span style="display:inline-block; width:24px; height:8px; border-radius:20px; background:#C79A3D; opacity:0.6;"></span>
+                <span style="display:inline-block; width:8px; height:8px; border-radius:20px; background:#5f7a6e; opacity:0.4;"></span>
+              </div>
+
+              <p style="margin:0 0 4px; font-size:12px; color:#2f3f3a; letter-spacing:0.1px; font-weight:500;">
+                 &copy; {{ year|default:"" }} {{ tenant_name|default:app_name }} &middot; All rights reserved
+              </p>
+              <p class="small-note" style="margin:6px auto 0; font-size:11px; color:#4d625a; line-height:1.6; background:rgba(255,248,235,0.35); padding:6px 14px; border-radius:40px; display:inline-block; margin-top:4px;">
+                 This is an automated message from {{ tenant_name|default:app_name }}. Please do not reply directly to this email.
+                <a href="#" style="color:#1d3d34; text-decoration:none; font-weight:600; border-bottom:1px dashed #a7752b;">Privacy</a>
+                ·
+                <a href="#" style="color:#1d3d34; text-decoration:none; font-weight:600; border-bottom:1px dashed #a7752b;">Support</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</center>
+
 </body>
 </html>

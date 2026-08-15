@@ -27,11 +27,49 @@ class ConsultationNoteViewSet(TenantScopedModelViewSet):
             queryset = queryset.filter(visit_id=visit_id)
         return queryset
 
-    def perform_create(self, serializer):
-        super().perform_create(serializer)
-        user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            serializer.save(doctor=user.tenant_user)
+    def create(self, request, *args, **kwargs):
+        visit_id = request.data.get('visit')
+        if visit_id:
+            from patients.models import PatientVisit
+            visit = PatientVisit.objects.filter(pk=visit_id).first()
+            if visit:
+                note, created = ConsultationNote.objects.update_or_create(
+                    visit=visit,
+                    defaults={
+                        'tenant': visit.tenant,
+                        'patient': visit.patient,
+                        'doctor': getattr(request.user, 'tenant_user', None),
+                        'subjective': request.data.get('subjective', ''),
+                        'objective': request.data.get('objective', ''),
+                        'assessment': request.data.get('assessment', ''),
+                        'plan': request.data.get('plan', ''),
+                        'diagnosis_codes': request.data.get('diagnosis_codes', []),
+                        'differential_diagnosis': request.data.get('differential_diagnosis', ''),
+                        'chief_complaint': request.data.get('chief_complaint', ''),
+                        'history_of_present_illness': request.data.get('history_of_present_illness', ''),
+                        'ice_ideas': request.data.get('ice_ideas', ''),
+                        'ice_concerns': request.data.get('ice_concerns', ''),
+                        'ice_expectations': request.data.get('ice_expectations', ''),
+                        'past_medical_history': request.data.get('past_medical_history', {}),
+                        'family_history': request.data.get('family_history', {}),
+                        'social_history': request.data.get('social_history', {}),
+                        'physical_exam': request.data.get('physical_exam', {}),
+                        'disposition_type': request.data.get('disposition_type', ''),
+                        'disposition_reason': request.data.get('disposition_reason', ''),
+                        'admission_required': request.data.get('admission_required', False),
+                        'follow_up_date': request.data.get('follow_up_date'),
+                        'follow_up_time': request.data.get('follow_up_time'),
+                        'follow_up_reason': request.data.get('follow_up_reason', ''),
+                        'billing_items': request.data.get('billing_items', []),
+                        'insurance_covered': request.data.get('insurance_covered', False),
+                        'insurance_amount': request.data.get('insurance_amount', 0),
+                        'is_final': request.data.get('is_final', False)
+                    }
+                )
+                serializer = self.get_serializer(note)
+                status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+                return Response(serializer.data, status=status_code)
+        return super().create(request, *args, **kwargs)
 
 
 class PrescriptionViewSet(TenantScopedModelViewSet):

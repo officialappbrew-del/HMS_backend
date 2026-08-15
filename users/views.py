@@ -179,15 +179,15 @@ class UserViewSet(viewsets.ModelViewSet):
             user.token_version += 1
             user.save()
             
-            # Log security event
-            SecurityEvent.objects.create(
-                user=user,
-                event_type=SecurityEvent.EventType.PASSWORD_CHANGE,
-                severity=SecurityEvent.Severity.INFO,
-                description='Password changed successfully',
-                ip_address=self.get_client_ip(request),
-                user_agent=request.META.get('HTTP_USER_AGENT', '')
-            )
+            if isinstance(user, GlobalUser):
+                SecurityEvent.objects.create(
+                    user=user,
+                    event_type=SecurityEvent.EventType.PASSWORD_CHANGE,
+                    severity=SecurityEvent.Severity.INFO,
+                    description='Password changed successfully',
+                    ip_address=self.get_client_ip(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
+                )
             
             # Terminate all other sessions
             UserSession.objects.filter(
@@ -209,16 +209,16 @@ class UserViewSet(viewsets.ModelViewSet):
         
         user.lock_account(duration)
         
-        # Log security event
-        SecurityEvent.objects.create(
-            user=user,
-            event_type=SecurityEvent.EventType.ACCOUNT_LOCKED,
-            severity=SecurityEvent.Severity.HIGH,
-            description=f'Account locked for {duration} minutes',
-            ip_address=self.get_client_ip(request),
-            user_agent=request.META.get('HTTP_USER_AGENT', ''),
-            metadata={'duration_minutes': duration}
-        )
+        if isinstance(user, GlobalUser):
+            SecurityEvent.objects.create(
+                user=user,
+                event_type=SecurityEvent.EventType.ACCOUNT_LOCKED,
+                severity=SecurityEvent.Severity.HIGH,
+                description=f'Account locked for {duration} minutes',
+                ip_address=self.get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                metadata={'duration_minutes': duration}
+            )
         
         return Response({'detail': f'Account locked for {duration} minutes'})
     
@@ -228,15 +228,15 @@ class UserViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         user.unlock_account()
         
-        # Log security event
-        SecurityEvent.objects.create(
-            user=user,
-            event_type=SecurityEvent.EventType.ACCOUNT_UNLOCKED,
-            severity=SecurityEvent.Severity.INFO,
-            description='Account unlocked',
-            ip_address=self.get_client_ip(request),
-            user_agent=request.META.get('HTTP_USER_AGENT', '')
-        )
+        if isinstance(user, GlobalUser):
+            SecurityEvent.objects.create(
+                user=user,
+                event_type=SecurityEvent.EventType.ACCOUNT_UNLOCKED,
+                severity=SecurityEvent.Severity.INFO,
+                description='Account unlocked',
+                ip_address=self.get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
         
         return Response({'detail': 'Account unlocked'})
     
@@ -490,11 +490,13 @@ class AuthenticationView(APIView):
                 )
 
         tenant_domain = data.get('tenant_domain')
-        tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
+        tenant_id_from_body = data.get('tenant_id')
+        tenant_id_from_header = request.headers.get('X-Tenant-ID')
+        tenant_id = tenant_id_from_body or tenant_id_from_header
 
-        if tenant_domain or tenant_id:
-            logger.info(f"[AUTH] Routing to tenant auth: tenant_domain={tenant_domain} tenant_id={tenant_id}")
-            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id)
+        if tenant_domain or tenant_id_from_body:
+            logger.info(f"[AUTH] Routing to tenant auth: tenant_domain={tenant_domain} tenant_id={tenant_id_from_body}")
+            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id_from_body)
 
         if data.get('user_id') and data.get('password'):
             logger.info(f"[AUTH] Routing to tenant auth by user_id: user_id={data.get('user_id')}")
@@ -1132,6 +1134,8 @@ class RSAKeyViewSet(viewsets.ModelViewSet):
     serializer_class = RSASerializer
     
     def get_queryset(self):
+        if not isinstance(self.request.user, GlobalUser):
+            return RSAKey.objects.none()
         return RSAKey.objects.filter(user=self.request.user, is_active=True)
     
     def perform_create(self, serializer):
@@ -1173,25 +1177,26 @@ class RSAKeyViewSet(viewsets.ModelViewSet):
         )
         
         # Log security event
-        SecurityEvent.objects.create(
-            user=self.request.user,
-            event_type=SecurityEvent.EventType.RSA_KEY_GENERATED,
-            severity=SecurityEvent.Severity.INFO,
-            description=f'RSA key {key.key_name} generated',
-            ip_address=self.get_client_ip(self.request),
-            user_agent=self.request.META.get('HTTP_USER_AGENT', '')
-        )
+        if isinstance(self.request.user, GlobalUser):
+            SecurityEvent.objects.create(
+                user=self.request.user,
+                event_type=SecurityEvent.EventType.RSA_KEY_GENERATED,
+                severity=SecurityEvent.Severity.INFO,
+                description=f'RSA key {key.key_name} generated',
+                ip_address=self.get_client_ip(self.request),
+                user_agent=self.request.META.get('HTTP_USER_AGENT', '')
+            )
     
     def perform_destroy(self, instance):
-        # Log security event
-        SecurityEvent.objects.create(
-            user=self.request.user,
-            event_type=SecurityEvent.EventType.RSA_KEY_REVOKED,
-            severity=SecurityEvent.Severity.INFO,
-            description=f'RSA key {instance.key_name} revoked',
-            ip_address=self.get_client_ip(self.request),
-            user_agent=self.request.META.get('HTTP_USER_AGENT', '')
-        )
+        if isinstance(self.request.user, GlobalUser):
+            SecurityEvent.objects.create(
+                user=self.request.user,
+                event_type=SecurityEvent.EventType.RSA_KEY_REVOKED,
+                severity=SecurityEvent.Severity.INFO,
+                description=f'RSA key {instance.key_name} revoked',
+                ip_address=self.get_client_ip(self.request),
+                user_agent=self.request.META.get('HTTP_USER_AGENT', '')
+            )
         
         instance.delete()
     
@@ -1232,6 +1237,8 @@ class UserSessionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = UserSessionSerializer
     
     def get_queryset(self):
+        if not isinstance(self.request.user, GlobalUser):
+            return UserSession.objects.none()
         return UserSession.objects.filter(user=self.request.user, is_active=True)
     
     @action(detail=True, methods=['post'])
@@ -1245,6 +1252,11 @@ class UserSessionViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['post'])
     def terminate_all(self, request):
         """Terminate all sessions except current one."""
+        if not isinstance(request.user, GlobalUser):
+            return Response(
+                {'detail': 'Session management is only available for platform users.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         UserSession.objects.filter(
             user=request.user,
             is_active=True
@@ -1261,6 +1273,9 @@ class SecurityEventViewSet(viewsets.ReadOnlyModelViewSet):
     
     def get_queryset(self):
         user = self.request.user
+        
+        if not isinstance(user, GlobalUser):
+            return SecurityEvent.objects.none()
         
         # System admins can see all security events
         if user.is_superuser or user.role == 'super_admin':
@@ -1283,6 +1298,8 @@ class UserNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = UserNotificationSerializer
     
     def get_queryset(self):
+        if not isinstance(self.request.user, GlobalUser):
+            return UserNotification.objects.none()
         return UserNotification.objects.filter(
             user=self.request.user,
             is_read=False
@@ -1323,6 +1340,11 @@ class TwoFASetupView(APIView):
     
     def get(self, request):
         """Get TOTP setup information."""
+        if not isinstance(request.user, GlobalUser):
+            return Response(
+                {'error': '2FA setup is only available for platform users.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         serializer = TOTPSetupSerializer(
             context={'user': request.user}
         )
@@ -1343,6 +1365,12 @@ class TwoFASetupView(APIView):
     
     def post(self, request):
         """Verify TOTP setup."""
+        if not isinstance(request.user, GlobalUser):
+            return Response(
+                {'error': '2FA setup is only available for platform users.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         code = request.data.get('code')
         
         if not code:
@@ -1369,7 +1397,6 @@ class TwoFASetupView(APIView):
             two_fa_settings.method = User2FA.TwoFAMethod.TOTP
             two_fa_settings.save()
             
-            # Log security event
             SecurityEvent.objects.create(
                 user=request.user,
                 event_type=SecurityEvent.EventType.TWO_FA_ENABLED,
@@ -1381,7 +1408,6 @@ class TwoFASetupView(APIView):
             
             return Response({'detail': 'TOTP verified successfully'})
         
-        # Log failed verification
         SecurityEvent.objects.create(
             user=request.user,
             event_type=SecurityEvent.EventType.TWO_FA_FAILED,
@@ -1398,6 +1424,12 @@ class TwoFASetupView(APIView):
     
     def delete(self, request):
         """Disable 2FA."""
+        if not isinstance(request.user, GlobalUser):
+            return Response(
+                {'error': '2FA management is only available for platform users.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
         try:
             two_fa_settings = User2FA.objects.get(user=request.user)
             
@@ -1415,7 +1447,6 @@ class TwoFASetupView(APIView):
             request.user.two_fa_enabled = False
             request.user.save()
             
-            # Log security event
             SecurityEvent.objects.create(
                 user=request.user,
                 event_type=SecurityEvent.EventType.TWO_FA_DISABLED,
@@ -1584,17 +1615,18 @@ def logout_view(request):
         try:
             refresh = RefreshToken(refresh_token)
             user_id = refresh.get('user_id')
-            if user_id and str(user_id) == str(getattr(user, 'id', '')):
+            if user_id and isinstance(user, GlobalUser) and str(user_id) == str(getattr(user, 'id', '')):
                 UserSession.objects.filter(user=user, is_active=True).update(is_active=False)
         except Exception:
             pass
 
-    SecurityEvent.objects.create(
-        user=user,
-        event_type=SecurityEvent.EventType.LOGOUT,
-        ip_address=getattr(request, 'user_ip', None),
-        user_agent=request.META.get('HTTP_USER_AGENT', ''),
-    )
+    if isinstance(user, GlobalUser):
+        SecurityEvent.objects.create(
+            user=user,
+            event_type=SecurityEvent.EventType.LOGOUT,
+            ip_address=getattr(request, 'user_ip', None),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
 
     response = Response({'detail': 'Logout successful'}, status=status.HTTP_200_OK)
     _clear_auth_cookies(response)

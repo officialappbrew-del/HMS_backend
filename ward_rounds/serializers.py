@@ -240,6 +240,71 @@ class DutyRosterSerializer(serializers.ModelSerializer):
             DutyAssignment.objects.create(roster=roster, staff_user=staff_user, **assignment_data)
         return roster
 
+    def update(self, instance, validated_data):
+        assignments_data = validated_data.pop('assignments', None)
+        instance.month = validated_data.get('month', instance.month)
+        instance.year = validated_data.get('year', instance.year)
+        instance.department = validated_data.get('department', instance.department)
+        instance.status = validated_data.get('status', instance.status)
+        instance.save(update_fields=['month', 'year', 'department', 'status', 'updated_at'])
+
+        if assignments_data is not None:
+            existing_assignments = {str(a.id): a for a in instance.assignments.all()}
+            tenant = instance.tenant
+            incoming_ids = set()
+            has_explicit_ids = False
+
+            for assignment_data in assignments_data:
+                assignment_id = assignment_data.get('id') or assignment_data.get('assignmentId')
+                if assignment_id is not None and assignment_id != '':
+                    has_explicit_ids = True
+                    assignment_id_str = str(assignment_id)
+                    incoming_ids.add(assignment_id_str)
+
+                if assignment_id and str(assignment_id) in existing_assignments:
+                    existing = existing_assignments[str(assignment_id)]
+                    existing.staff_id = assignment_data.get('staffId', existing.staff_id)
+                    existing.staff_name = assignment_data.get('staffName', existing.staff_name)
+                    existing.date = assignment_data.get('date', existing.date)
+                    existing.duty_type = assignment_data.get('dutyType', existing.duty_type)
+                    existing.start_time = assignment_data.get('startTime', existing.start_time)
+                    existing.end_time = assignment_data.get('endTime', existing.end_time)
+                    existing.notes = assignment_data.get('notes', existing.notes)
+                    existing.save()
+                    continue
+
+                staff_user = None
+                staff_id = assignment_data.get('staffId')
+                if staff_id and tenant:
+                    try:
+                        staff_user = TenantUser.objects.get(employee_id=staff_id, tenant=tenant)
+                    except TenantUser.DoesNotExist:
+                        staff_user = None
+
+                if assignment_id and str(assignment_id) not in existing_assignments:
+                    DutyAssignment.objects.create(
+                        roster=instance,
+                        staff_user=staff_user,
+                        staff_id=assignment_data.get('staffId', ''),
+                        staff_name=assignment_data.get('staffName', ''),
+                        date=assignment_data.get('date'),
+                        duty_type=assignment_data.get('dutyType', ''),
+                        start_time=assignment_data.get('startTime'),
+                        end_time=assignment_data.get('endTime'),
+                        notes=assignment_data.get('notes', ''),
+                    )
+                elif not assignment_id:
+                    # Preserve existing assignments when the client sends a partial update payload
+                    # without a full list of assignment IDs. This keeps untouched roster items intact.
+                    continue
+
+            if has_explicit_ids:
+                to_delete = [a for aid, a in existing_assignments.items() if aid not in incoming_ids]
+                if to_delete:
+                    instance.assignments.filter(id__in=[a.id for a in to_delete]).delete()
+
+        return instance
+
 
 class LeaveRequestSerializer(serializers.ModelSerializer):
     leaveId = serializers.CharField(source='id', read_only=True)

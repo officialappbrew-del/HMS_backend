@@ -34,6 +34,7 @@ class DutyRosterViewSet(TenantScopedModelViewSet):
     queryset = DutyRoster.objects.all()
     serializer_class = DutyRosterSerializer
     permission_classes = [permissions.IsAuthenticated]
+    lookup_field = 'roster_id'
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -67,7 +68,7 @@ class DutyRosterViewSet(TenantScopedModelViewSet):
             )
 
     @action(detail=True, methods=['post'], url_path='publish')
-    def publish(self, request, pk=None):
+    def publish(self, request, roster_id=None):
         roster = self.get_object()
         was_published = roster.status == 'Published'
         roster.status = 'Published'
@@ -91,25 +92,25 @@ class DutyRosterViewSet(TenantScopedModelViewSet):
             rid = assignment.roster.roster_id
             if rid not in roster_map:
                 roster_map[rid] = {
-                    id: assignment.roster.id,
-                    rosterId: assignment.roster.roster_id,
-                    month: assignment.roster.month,
-                    year: assignment.roster.year,
-                    department: assignment.roster.department,
-                    status: assignment.roster.status,
-                    assignments: [],
+                    'id': assignment.roster.id,
+                    'rosterId': assignment.roster.roster_id,
+                    'month': assignment.roster.month,
+                    'year': assignment.roster.year,
+                    'department': assignment.roster.department,
+                    'status': assignment.roster.status,
+                    'assignments': [],
                 }
             roster_map[rid]['assignments'].append({
-                id: assignment.id,
-                assignmentId: assignment.id,
-                staffId: assignment.staff_id,
-                staffName: assignment.staff_name,
-                staffUserId: assignment.staff_user_id,
-                date: assignment.date.isoformat() if assignment.date else None,
-                dutyType: assignment.duty_type,
-                startTime: assignment.start_time.isoformat() if assignment.start_time else None,
-                endTime: assignment.end_time.isoformat() if assignment.end_time else None,
-                notes: assignment.notes or '',
+                'id': assignment.id,
+                'assignmentId': assignment.id,
+                'staffId': assignment.staff_id,
+                'staffName': assignment.staff_name,
+                'staffUserId': assignment.staff_user_id,
+                'date': assignment.date.isoformat() if assignment.date else None,
+                'dutyType': assignment.duty_type,
+                'startTime': assignment.start_time.isoformat() if assignment.start_time else None,
+                'endTime': assignment.end_time.isoformat() if assignment.end_time else None,
+                'notes': assignment.notes or '',
             })
         return Response({'results': list(roster_map.values())})
 

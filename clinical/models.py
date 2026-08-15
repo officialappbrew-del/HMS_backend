@@ -8,17 +8,52 @@ from patients.models import Patient, PatientVisit
 
 
 class ConsultationNote(BaseModel):
-    """Clinical consultation notes (SOAP format)."""
+    """Clinical consultation notes (PISP-FDS framework)."""
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='consultation_notes')
     visit = models.ForeignKey(PatientVisit, on_delete=models.CASCADE, related_name='consultation_notes')
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='consultation_notes')
     
+    # HPI / Presenting Complaint
+    chief_complaint = models.TextField(blank=True)
+    history_of_present_illness = models.TextField(blank=True)
+    
+    # SOAP
     subjective = models.TextField(blank=True)
     objective = models.TextField(blank=True)
     assessment = models.TextField(blank=True)
+    plan = models.TextField(blank=True)
     diagnosis_codes = models.JSONField(default=list, blank=True)
     differential_diagnosis = models.TextField(blank=True)
-    plan = models.TextField(blank=True)
+    
+    # ICE
+    ice_ideas = models.TextField(blank=True)
+    ice_concerns = models.TextField(blank=True)
+    ice_expectations = models.TextField(blank=True)
+    
+    # Past Medical History
+    past_medical_history = models.JSONField(default=dict, blank=True)
+    
+    # Family History
+    family_history = models.JSONField(default=dict, blank=True)
+    
+    # Social History
+    social_history = models.JSONField(default=dict, blank=True)
+    
+    # Physical Exam
+    physical_exam = models.JSONField(default=dict, blank=True)
+    
+    # Disposition & Follow-up
+    disposition_type = models.CharField(max_length=20, blank=True)
+    disposition_reason = models.TextField(blank=True)
+    admission_required = models.BooleanField(default=False)
+    follow_up_date = models.DateField(null=True, blank=True)
+    follow_up_time = models.TimeField(null=True, blank=True)
+    follow_up_reason = models.TextField(blank=True)
+    
+    # Billing
+    billing_items = models.JSONField(default=list, blank=True)
+    insurance_covered = models.BooleanField(default=False)
+    insurance_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     
     doctor = models.ForeignKey('tenants.TenantUser', on_delete=models.SET_NULL, null=True,
                               limit_choices_to={'role': 'doctor'})
@@ -26,6 +61,8 @@ class ConsultationNote(BaseModel):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_final = models.BooleanField(default=False)
+    is_signed = models.BooleanField(default=False)
+    signed_at = models.DateTimeField(null=True, blank=True)
     
     def __str__(self):
         return f"Consultation Note for {self.patient.get_full_name()} - {self.created_at.date()}"
@@ -34,6 +71,9 @@ class ConsultationNote(BaseModel):
         verbose_name = _('Consultation Note')
         verbose_name_plural = _('Consultation Notes')
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['tenant', 'visit', '-created_at']),
+        ]
 
 
 class Prescription(BaseModel):
