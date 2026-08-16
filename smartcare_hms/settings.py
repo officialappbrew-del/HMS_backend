@@ -109,6 +109,19 @@ if SENTRY_DSN:
 # ============================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load the project .env before reading config values.
+# This ensures local development uses the local DB instead of stale Render vars.
+ENV_FILE = BASE_DIR / '.env'
+if ENV_FILE.exists():
+    for raw_line in ENV_FILE.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = [part.strip() for part in line.split('=', 1)]
+        if value and value[0] in {'"', "'"} and value[-1] == value[0]:
+            value = value[1:-1]
+        os.environ[key] = value
+
 # ============================================
 # SECURITY
 # ============================================
