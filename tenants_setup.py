@@ -62,14 +62,16 @@ subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
 public_tenant, tenant_created = Tenant.objects.get_or_create(
     schema_name='public',
     defaults={
-        'name': 'local',
+        # 'name': 'local',
         # 'name': 'Render',
+        'NGROK': 'ngrok',
         # 'code': 'RENDER',
         'code': 'LOCAL',
         # 'domain': 'hms-backend-l09g.onrender.com',
-        'domain': 'localhost',
+        'domain': '1145-102-90-124-57.ngrok-free.app',
+        # 'domain': 'localhost',
         # 'email': 'admin.app@onrender.com',
-        'email': 'admin.app@local.com',
+        'email': 'admin.app@1145-102-90-124-57.ngrok-free.app.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
@@ -104,7 +106,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
 TenantDomain.objects.get_or_create(
     tenant=public_tenant,
     # domain='hms-backend-l09g.onrender.com',
-    domain='localhost',
+    # domain='localhost',
+    domain='loca1145-102-90-124-57.ngrok-free.applhost',
     defaults={'is_primary': True},
 )
 

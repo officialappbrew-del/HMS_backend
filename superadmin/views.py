@@ -399,10 +399,18 @@ class TenantAdminListView(APIView):
 
         queryset = queryset.order_by('-created_at')
 
+        # Prefetch root admins for all tenants on this page in one query
         paginator = SuperAdminPagination()
         page = paginator.paginate_queryset(queryset, request)
+        tenant_ids = [tenant.id for tenant in page]
+        root_admins_qs = TenantUser.objects.filter(
+            tenant_id__in=tenant_ids,
+            is_root_admin=True
+        ).only('id', 'tenant_id', 'first_name', 'last_name', 'email', 'phone', 'role', 'employee_id')
+        root_admins = {admin.tenant_id: admin for admin in root_admins_qs}
+
         serializer = TenantAdminListSerializer(
-            page, many=True, context={'user_counts': user_counts}
+            page, many=True, context={'user_counts': user_counts, 'root_admins': root_admins}
         )
         return paginator.get_paginated_response(serializer.data)
 
@@ -420,6 +428,13 @@ class TenantAdminDetailView(APIView):
         tenant = Tenant.objects.filter(public_id=public_id).first()
         if not tenant:
             return Response({'error': 'Tenant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Prefetch root admin for this tenant
+        root_admin = TenantUser.objects.filter(
+            tenant=tenant,
+            is_root_admin=True
+        ).only('id', 'first_name', 'last_name', 'email', 'phone', 'role', 'employee_id').first()
+        tenant._root_admin = root_admin
 
         serializer = TenantDetailSerializer(tenant)
         return Response(serializer.data)

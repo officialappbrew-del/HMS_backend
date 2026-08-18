@@ -12,6 +12,7 @@ class TenantAdminListSerializer(serializers.ModelSerializer):
     user_count = serializers.IntegerField(read_only=True)
     state_name = serializers.CharField(source='state.name', read_only=True)
     country_name = serializers.CharField(source='country.name', read_only=True)
+    root_admin = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -20,8 +21,22 @@ class TenantAdminListSerializer(serializers.ModelSerializer):
             'is_active', 'subscription_status', 'subscription_plan',
             'subscription_plan_name', 'monthly_fee', 'subscription_start_date',
             'subscription_end_date', 'facility_type', 'state_name',
-            'country_name', 'user_count', 'created_at',
+            'country_name', 'user_count', 'created_at', 'root_admin',
         ]
+
+    def get_root_admin(self, obj):
+        root_admins = self.context.get('root_admins') or {}
+        admin = root_admins.get(obj.id)
+        if not admin:
+            return None
+        return {
+            'id': admin.id,
+            'name': admin.get_full_name() or admin.username,
+            'email': admin.email,
+            'phone': admin.phone,
+            'role': admin.role,
+            'employee_id': admin.employee_id,
+        }
 
 
 class TenantDetailSerializer(serializers.ModelSerializer):
@@ -39,6 +54,7 @@ class TenantDetailSerializer(serializers.ModelSerializer):
     subscription_plan_details = serializers.SerializerMethodField()
     days_remaining_in_trial = serializers.SerializerMethodField()
     is_active_status = serializers.SerializerMethodField()
+    root_admin = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -56,7 +72,21 @@ class TenantDetailSerializer(serializers.ModelSerializer):
             'bed_capacity', 'operating_hours', 'emergency_services',
             'config', 'features', 'notes', 'logo', 'state', 'lga',
             'country', 'facility_type', 'subscription_plan', 'created_by',
+            'root_admin',
         ]
+
+    def get_root_admin(self, obj):
+        admin = getattr(obj, '_root_admin', None)
+        if not admin:
+            return None
+        return {
+            'id': admin.id,
+            'name': admin.get_full_name() or admin.username,
+            'email': admin.email,
+            'phone': admin.phone,
+            'role': admin.role,
+            'employee_id': admin.employee_id,
+        }
 
     def get_tenant_id(self, obj):
         return str(obj.public_id)
