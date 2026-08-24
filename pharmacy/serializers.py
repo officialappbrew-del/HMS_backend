@@ -13,6 +13,7 @@ class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
         fields = '__all__'
+        read_only_fields = ['tenant']
 
 
 class SaleItemSerializer(serializers.ModelSerializer):
@@ -63,6 +64,7 @@ class DispenseSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     drug_name = serializers.CharField(source='drug.name', read_only=True)
     dispensed_by_name = serializers.CharField(source='dispensed_by.get_full_name', read_only=True)
+    prescribed_by_name = serializers.CharField(source='prescription.prescribed_by.get_full_name', read_only=True)
 
     class Meta:
         model = Dispense

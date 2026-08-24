@@ -26,7 +26,7 @@ class ConsultationNoteViewSet(TenantScopedModelViewSet):
         visit_id = self.request.query_params.get('visit')
         if visit_id:
             queryset = queryset.filter(visit_id=visit_id)
-        return queryset.order_by('-prescribed_date', '-visit__checkin_time', '-id')
+        return queryset.order_by('-created_at', '-visit__checkin_time', '-id')
 
     def create(self, request, *args, **kwargs):
         visit_id = request.data.get('visit')
@@ -109,6 +109,10 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
         if prescription_status:
             queryset = queryset.filter(status=prescription_status)
         return queryset.order_by('-prescribed_date', '-visit__checkin_time', '-id')
+
+    @action(detail=False, methods=['get'])
+    def export(self, request):
+        return Response({'prescriptions': self.get_serializer(self.get_queryset(), many=True).data})
 
     def perform_create(self, serializer):
         tenant = self._get_request_tenant()

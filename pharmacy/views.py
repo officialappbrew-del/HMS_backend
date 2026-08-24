@@ -128,6 +128,34 @@ class SaleViewSet(TenantScopedModelViewSet):
 
         return queryset.select_related('patient', 'sold_by').prefetch_related('items')
 
+    @action(detail=False, methods=['get'])
+    def report(self, request):
+        drugs = Drug.objects.filter(tenant=self._get_request_tenant())
+        sales = self.get_queryset()
+        return Response({
+            'generated_at': timezone.now(),
+            'drugs': DrugSerializer(drugs, many=True).data,
+            'sales': SaleSerializer(sales, many=True).data,
+        })
+
+    @action(detail=False, methods=['get'])
+    def analytics(self, request):
+        sales = self.get_queryset()
+        return Response({
+            'sale_count': sales.count(),
+            'total_revenue': sales.aggregate(total=models.Sum('total_amount'))['total'] or 0,
+            'paid_sales': sales.filter(payment_status='paid').count(),
+            'pending_sales': sales.filter(payment_status='pending').count(),
+            'by_payment_method': [
+                {'payment_method': item['payment_method'], 'count': item['count']}
+                for item in sales.values('payment_method').annotate(count=models.Count('id'))
+            ],
+        })
+
+    @action(detail=True, methods=['get'])
+    def receipt(self, request, pk=None):
+        return Response(SaleSerializer(self.get_object()).data)
+
     @transaction.atomic
     def perform_create(self, serializer):
         user = self.request.user
