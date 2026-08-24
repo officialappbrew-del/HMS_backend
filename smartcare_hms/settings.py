@@ -671,7 +671,7 @@ SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 CELERY_TASK_ALWAYS_EAGER = False
 CELERY_BROKER_URL = config(
     'CELERY_BROKER_URL',
-    default=(_REDIS_URL or ('memory://' if DEBUG else 'redis://localhost:6379/0')),
+    default=(_REDIS_URL or 'redis://localhost:6379/0'),
 )
 
 # Use Redis for the result backend when available to reduce DB writes; fall back

@@ -963,13 +963,16 @@ class PasswordResetRequestView(APIView):
             )
 
             from .tasks import send_password_reset_email_task
-            logger.info('Submitting password reset email task for %s', recipient_email)
-            task_result = send_password_reset_email_task.delay(
-                recipient_email=recipient_email,
-                reset_token=reset_token.token,
-                user_name=getattr(user, 'get_full_name', lambda: None)(),
-            )
-            logger.info('Password reset email task %s state=%s', task_result.id, task_result.state)
+            logger.info('Sending password reset email synchronously to %s', recipient_email)
+            try:
+                send_password_reset_email_task.run(
+                    recipient_email=recipient_email,
+                    reset_token=reset_token.token,
+                    user_name=getattr(user, 'get_full_name', lambda: None)(),
+                )
+                logger.info('Password reset email sent to %s', recipient_email)
+            except Exception:
+                logger.exception('Unable to send password reset email to %s', recipient_email)
         
         return Response({
             'detail': 'If an account exists for this identifier, a password reset email has been sent.',
