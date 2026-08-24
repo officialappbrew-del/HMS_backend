@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import quote
 from celery import shared_task
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
@@ -51,7 +52,7 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
         base_context = {
             'user_name': user_name or 'User',
             'reset_token': reset_token,
-            'reset_url': f'{settings.FRONTEND_URL}/reset-password?token={reset_token}' if hasattr(settings, 'FRONTEND_URL') else None,
+            'reset_url': f'{settings.FRONTEND_URL.rstrip("/")}/login?token={quote(reset_token)}' if hasattr(settings, 'FRONTEND_URL') else None,
             'expiry_hours': 1,
             'app_name': settings.APP_NAME,
         }
