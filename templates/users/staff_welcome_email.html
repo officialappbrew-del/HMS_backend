@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+  <body style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
+    <h2>Welcome to {{ tenant_name }}, {{ staff_name }}</h2>
+    <p>Your staff account has been created.</p>
+    <p><a href="{{ login_url }}">Open the login page</a></p>
+    <table cellpadding="6" cellspacing="0" style="border-collapse: collapse;">
+      <tr><td><strong>Employee ID</strong></td><td>{{ employee_id }}</td></tr>
+      <tr><td><strong>Email</strong></td><td>{{ recipient_email }}</td></tr>
+      <tr><td><strong>Temporary password</strong></td><td>{{ temporary_password }}</td></tr>
+    </table>
+    <p>Please sign in and change your password immediately. Do not share these credentials.</p>
+    <p>Regards,<br>{{ tenant_name }}</p>
+  </body>
+</html>

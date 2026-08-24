@@ -1,9 +1,10 @@
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
 from rest_framework import permissions, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied
 from .models import ConsultationNote, Prescription, VitalSign, EarlyWarningScore, VitalSignAlert
 from .serializers import (
     ConsultationNoteSerializer, PrescriptionSerializer, VitalSignSerializer,
@@ -25,7 +26,7 @@ class ConsultationNoteViewSet(TenantScopedModelViewSet):
         visit_id = self.request.query_params.get('visit')
         if visit_id:
             queryset = queryset.filter(visit_id=visit_id)
-        return queryset
+        return queryset.order_by('-prescribed_date', '-visit__checkin_time', '-id')
 
     def create(self, request, *args, **kwargs):
         visit_id = request.data.get('visit')
@@ -33,37 +34,48 @@ class ConsultationNoteViewSet(TenantScopedModelViewSet):
             from patients.models import PatientVisit
             visit = PatientVisit.objects.filter(pk=visit_id).first()
             if visit:
+                existing_note = ConsultationNote.objects.filter(visit=visit).first()
+
+                def note_value(field, default):
+                    if field in request.data:
+                        return request.data[field]
+                    return getattr(existing_note, field, default)
+
                 note, created = ConsultationNote.objects.update_or_create(
                     visit=visit,
                     defaults={
                         'tenant': visit.tenant,
                         'patient': visit.patient,
                         'doctor': getattr(request.user, 'tenant_user', None),
-                        'subjective': request.data.get('subjective', ''),
-                        'objective': request.data.get('objective', ''),
-                        'assessment': request.data.get('assessment', ''),
-                        'plan': request.data.get('plan', ''),
-                        'diagnosis_codes': request.data.get('diagnosis_codes', []),
-                        'differential_diagnosis': request.data.get('differential_diagnosis', ''),
-                        'chief_complaint': request.data.get('chief_complaint', ''),
-                        'history_of_present_illness': request.data.get('history_of_present_illness', ''),
-                        'ice_ideas': request.data.get('ice_ideas', ''),
-                        'ice_concerns': request.data.get('ice_concerns', ''),
-                        'ice_expectations': request.data.get('ice_expectations', ''),
-                        'past_medical_history': request.data.get('past_medical_history', {}),
-                        'family_history': request.data.get('family_history', {}),
-                        'social_history': request.data.get('social_history', {}),
-                        'physical_exam': request.data.get('physical_exam', {}),
-                        'disposition_type': request.data.get('disposition_type', ''),
-                        'disposition_reason': request.data.get('disposition_reason', ''),
-                        'admission_required': request.data.get('admission_required', False),
-                        'follow_up_date': request.data.get('follow_up_date'),
-                        'follow_up_time': request.data.get('follow_up_time'),
-                        'follow_up_reason': request.data.get('follow_up_reason', ''),
-                        'billing_items': request.data.get('billing_items', []),
-                        'insurance_covered': request.data.get('insurance_covered', False),
-                        'insurance_amount': request.data.get('insurance_amount', 0),
-                        'is_final': request.data.get('is_final', False)
+                        'subjective': note_value('subjective', ''),
+                        'objective': note_value('objective', ''),
+                        'assessment': note_value('assessment', ''),
+                        'plan': note_value('plan', ''),
+                        'diagnosis_codes': note_value('diagnosis_codes', []),
+                        'differential_diagnosis': note_value('differential_diagnosis', ''),
+                        'chief_complaint': note_value('chief_complaint', ''),
+                        'history_of_present_illness': note_value('history_of_present_illness', ''),
+                        'duration': note_value('duration', ''),
+                        'timing': note_value('timing', ''),
+                        'hpi_details': note_value('hpi_details', {}),
+                        'ice_ideas': note_value('ice_ideas', ''),
+                        'ice_concerns': note_value('ice_concerns', ''),
+                        'ice_expectations': note_value('ice_expectations', ''),
+                        'allergies': note_value('allergies', []),
+                        'past_medical_history': note_value('past_medical_history', {}),
+                        'family_history': note_value('family_history', {}),
+                        'social_history': note_value('social_history', {}),
+                        'physical_exam': note_value('physical_exam', {}),
+                        'disposition_type': note_value('disposition_type', ''),
+                        'disposition_reason': note_value('disposition_reason', ''),
+                        'admission_required': note_value('admission_required', False),
+                        'follow_up_date': note_value('follow_up_date', None),
+                        'follow_up_time': note_value('follow_up_time', None),
+                        'follow_up_reason': note_value('follow_up_reason', ''),
+                        'billing_items': note_value('billing_items', []),
+                        'insurance_covered': note_value('insurance_covered', False),
+                        'insurance_amount': note_value('insurance_amount', 0),
+                        'is_final': note_value('is_final', False)
                     }
                 )
                 serializer = self.get_serializer(note)
@@ -85,10 +97,18 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
         patient_id = self.request.query_params.get('patient')
         if patient_id:
             queryset = queryset.filter(patient_id=patient_id)
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                models.Q(patient__mrn__icontains=search)
+                | models.Q(patient__hospital_number__icontains=search)
+                | models.Q(patient__first_name__icontains=search)
+                | models.Q(patient__last_name__icontains=search)
+            )
         prescription_status = self.request.query_params.get('status')
         if prescription_status:
             queryset = queryset.filter(status=prescription_status)
-        return queryset
+        return queryset.order_by('-prescribed_date', '-visit__checkin_time', '-id')
 
     def perform_create(self, serializer):
         tenant = self._get_request_tenant()
@@ -100,10 +120,12 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
         if visit and not validated_data.get('patient'):
             validated_data['patient'] = visit.patient
         
-        serializer.save(**validated_data)
         user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            serializer.save(prescribed_by=user.tenant_user)
+        serializer.save(
+            tenant=tenant,
+            prescribed_by=getattr(user, 'tenant_user', None),
+            **validated_data,
+        )
 
     @action(detail=False, methods=['get'], url_path='history')
     def medication_history(self, request):
@@ -124,7 +146,10 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
                 'frequency': prescription.frequency,
                 'duration': prescription.duration,
                 'route': prescription.route,
+                'quantity': prescription.quantity,
                 'status': prescription.status,
+                'prescribed_by_name': prescription.prescribed_by.get_full_name() if prescription.prescribed_by else None,
+                'visit_number': prescription.visit.visit_number,
                 'prescribed_date': prescription.prescribed_date.isoformat(),
             })
 
@@ -201,10 +226,15 @@ class VitalSignViewSet(TenantScopedModelViewSet):
         return super().get_queryset().select_related('patient', 'recorded_by', 'visit')
 
     def perform_create(self, serializer):
-        super().perform_create(serializer)
         user = self.request.user
+        tenant = self._get_request_tenant()
+        if not tenant:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Tenant context required.')
         if hasattr(user, 'tenant_user') and user.tenant_user:
-            serializer.save(recorded_by=user.tenant_user)
+            serializer.save(tenant=tenant, recorded_by=user.tenant_user)
+        else:
+            serializer.save(tenant=tenant)
 
 
 class EarlyWarningScoreViewSet(TenantScopedModelViewSet):

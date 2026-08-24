@@ -9,11 +9,12 @@ import jwt
 
 
 
+
 from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup, BulkTenantUserUpload,
-    CommunicationProfile
+    CommunicationProfile, SubscriptionExpiryNotification
 )
 from core.models import State, LGA, FacilityType, Specialization
 from core.serializers import StateSerializer, LGASerializer, FacilityTypeSerializer
@@ -83,6 +84,14 @@ class TenantSerializer(serializers.ModelSerializer):
     # Computed fields
     is_active_status = serializers.BooleanField(source='is_active', read_only=True)
     days_remaining_in_trial = serializers.IntegerField(read_only=True)
+    days_remaining = serializers.SerializerMethodField()
+    is_subscription_expiring_soon = serializers.SerializerMethodField()
+
+    def get_days_remaining(self, obj):
+        return obj.days_remaining
+
+    def get_is_subscription_expiring_soon(self, obj):
+        return obj.is_subscription_expiring_soon
 
     def _normalize_date(self, value):
         if value is None or value == '':
@@ -731,3 +740,78 @@ class CommunicationProfileSerializer(serializers.ModelSerializer):
         model = CommunicationProfile
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at', 'tenant']
+
+
+class SubscriptionExpiryNotificationSerializer(serializers.ModelSerializer):
+    """Serializer for subscription expiry notifications."""
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+    notification_type_display = serializers.CharField(source='get_notification_type_display', read_only=True)
+    
+    class Meta:
+        model = SubscriptionExpiryNotification
+        fields = '__all__'
+        read_only_fields = ['sent_at', 'is_sent']
+
+
+class SelfSignupSerializer(serializers.Serializer):
+    """Validation for public, self-service tenant signup.
+
+    Only the fields required to provision a trial tenant + root admin are
+    accepted. Field validation only -- provisioning lives in
+    ``SelfSignupView`` so it can mirror ``TenantAdminCreateView`` and wrap the
+    whole operation in a single atomic block.
+    """
+    hospital_name = serializers.CharField(max_length=200, min_length=2)
+    facility_type = serializers.IntegerField(required=False, allow_null=True)
+    country = serializers.IntegerField(required=False)
+    state = serializers.IntegerField(required=False, allow_null=True)
+    lga = serializers.IntegerField(required=False, allow_null=True)
+    address = serializers.CharField(max_length=500)
+    city = serializers.CharField(max_length=100)
+    email = serializers.EmailField()
+    phone = serializers.CharField(max_length=20)
+    registration_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    tax_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    website = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    plan_id = serializers.IntegerField(required=False, allow_null=True)
+    billing_period = serializers.ChoiceField(
+        choices=[('monthly', 'Monthly'), ('quarterly', 'Quarterly'), ('yearly', 'Yearly')],
+        default='monthly',
+    )
+    payment_method = serializers.ChoiceField(choices=['paystack', 'paypal'], default='paystack')
+
+    admin_first_name = serializers.CharField(max_length=100, min_length=1)
+    admin_last_name = serializers.CharField(max_length=100, min_length=1)
+    admin_email = serializers.EmailField()
+    admin_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_email(self, value):
+        return value.lower()
+
+    def validate_admin_email(self, value):
+        return value.lower()
+
+    def validate(self, attrs):
+        if attrs.get('password') != attrs.get('confirm_password'):
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        try:
+            validate_password(attrs['password'])
+        except Exception as exc:
+            raise serializers.ValidationError({'password': list(exc.messages)})
+        if attrs['admin_email'].lower() != attrs.get('email', '').lower():
+            # Allow them to differ, but warn-level validation is left to the view;
+            # ensure the billing contact is a valid, normalized email.
+            pass
+        return attrs
+
+
+class PaystackCheckoutSerializer(serializers.Serializer):
+    """Validate a Paystack checkout request."""
+    plan_id = serializers.IntegerField()
+    billing_period = serializers.ChoiceField(
+        choices=[('monthly', 'Monthly'), ('quarterly', 'Quarterly'), ('yearly', 'Yearly')],
+        default='monthly',
+    )
+    callback_url = serializers.URLField(required=False, allow_blank=True)

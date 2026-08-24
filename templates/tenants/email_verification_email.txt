@@ -1,0 +1,16 @@
+Welcome to {{ app_name }} - verify your email
+
+Hi {{ admin_name }},
+
+Your {{ app_name }} account for {{ tenant_name }} has been created. Please verify
+your email address to activate your account and start your 30-day trial.
+
+Verify your email: {{ verify_url }}
+
+Your login ID: {{ login_id }}
+
+Haven't received the email? Paste the verification link above into your browser.
+
+Questions? Contact {{ support_email }}.
+
+© {{ year }} {{ app_name }}. All rights reserved.

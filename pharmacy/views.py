@@ -178,6 +178,8 @@ class DispenseViewSet(TenantScopedModelViewSet):
 
         drug = serializer.validated_data['drug']
         quantity = serializer.validated_data['quantity']
+        if quantity <= 0:
+            raise serializers.ValidationError({'quantity': 'Quantity must be greater than zero.'})
 
         if drug.stock_quantity < quantity:
             from rest_framework.exceptions import ValidationError

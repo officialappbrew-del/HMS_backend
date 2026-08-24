@@ -175,16 +175,131 @@ class Tenant(BaseModel):
         
         remaining = (self.subscription_end_date - timezone.now().date()).days
         return max(0, remaining)
+
+    @property
+    def days_remaining(self):
+        """Calculate days remaining in current subscription period."""
+        if not self.subscription_end_date:
+            return None
+        remaining = (self.subscription_end_date - timezone.now().date()).days
+        return max(0, remaining)
+
+    @property
+    def is_subscription_expiring_soon(self):
+        """Check if subscription is expiring within 30 days."""
+        days = self.days_remaining
+        return days is not None and 0 <= days <= 30
     
     def create_schema(self):
-        """Create database schema for this tenant."""
-        # This would be implemented with django-tenant-schemas
-        # or django-tenants library
-        pass
-    
+        """Provision this tenant's PostgreSQL schema.
+
+        Creates the schema and runs the tenant-app migrations into it. This is
+        best-effort: the ``CREATE SCHEMA`` is always performed (idempotent), and
+        the migration run is attempted with the django-tenants ``schema_context``
+        helper so shared tables stay in ``public``. Any migration failure is
+        logged and swallowed so callers (e.g. self-service signup) are not
+        broken by a provisioning hiccup; a background ``migrate_schemas`` run
+        will reconcile any missing tables.
+        """
+        import logging
+        from django.db import connection
+        from django.core.management import call_command
+        logger = logging.getLogger(__name__)
+
+        with connection.cursor() as cursor:
+            cursor.execute('CREATE SCHEMA IF NOT EXISTS %s' % connection.ops.quote_name(self.schema_name))
+
+        try:
+            from django_tenants.utils import schema_context
+            with schema_context(self.schema_name):
+                call_command('migrate_schemas', schema_name=self.schema_name,
+                             interactive=False, verbosity=0)
+        except Exception as exc:
+            logger.warning('migrate_schemas skipped for schema %s: %s', self.schema_name, exc)
+
+        try:
+            connection.set_schema_to_public()
+        except Exception:
+            pass
+        return True
+
     def delete_schema(self):
-        """Delete database schema for this tenant."""
-        pass
+        """Drop this tenant's PostgreSQL schema (and its objects)."""
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute('DROP SCHEMA IF EXISTS %s CASCADE' % connection.ops.quote_name(self.schema_name))
+        try:
+            connection.set_schema_to_public()
+        except Exception:
+            pass
+        return True
+
+
+class SubscriptionPayment(BaseModel):
+    """Platform subscription payment tracked in the public schema."""
+    class Status(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        SUCCESS = 'success', _('Success')
+        FAILED = 'failed', _('Failed')
+
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='subscription_payments'
+    )
+    plan = models.ForeignKey('SubscriptionPlan', on_delete=models.PROTECT, related_name='subscription_payments')
+    reference = models.CharField(max_length=100, unique=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='NGN')
+    billing_period = models.CharField(max_length=20, default='monthly')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    gateway = models.CharField(max_length=30, default='paystack')
+    gateway_response = models.JSONField(default=dict, blank=True)
+    signup_data = models.JSONField(default=dict, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['tenant', 'status', '-created_at']),
+            models.Index(fields=['status', '-created_at']),
+        ]
+
+
+class SubscriptionExpiryNotification(BaseModel):
+    """Track subscription expiry notifications sent to tenants."""
+    class NotificationType(models.TextChoices):
+        ONE_MONTH = '1_month', _('1 Month Before Expiry')
+        TWO_WEEKS = '2_weeks', _('2 Weeks Before Expiry')
+        THREE_DAYS = '3_days', _('3 Days Before Expiry')
+        DEADLINE = 'deadline', _('On Expiry Date')
+
+    tenant = models.ForeignKey('Tenant', on_delete=models.CASCADE, related_name='expiry_notifications')
+    notification_type = models.CharField(max_length=20, choices=NotificationType.choices)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    recipient_email = models.EmailField()
+    subject = models.CharField(max_length=200)
+    body = models.TextField()
+    is_sent = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = _('Subscription Expiry Notification')
+        verbose_name_plural = _('Subscription Expiry Notifications')
+        ordering = ['-sent_at']
+        indexes = [
+            models.Index(fields=['tenant', 'notification_type', '-sent_at']),
+            models.Index(fields=['tenant', '-sent_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'notification_type'],
+                condition=models.Q(is_sent=True),
+                name='unique_sent_notification_per_tenant_per_type'
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.tenant.name} - {self.get_notification_type_display()}"
+
 
 class TenantDomain(DomainMixin):
     pass

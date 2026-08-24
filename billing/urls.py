@@ -5,6 +5,10 @@ from .views import (
     PaymentViewSet,
     InsuranceClaimViewSet,
     BillingAuditLogViewSet,
+    SubscriptionOverviewView,
+    SubscriptionCheckoutView,
+    SubscriptionWebhookView,
+    FinancialAnalyticsView,
 )
 
 router = DefaultRouter()
@@ -14,5 +18,9 @@ router.register(r'insurance-claims', InsuranceClaimViewSet)
 router.register(r'audit-logs', BillingAuditLogViewSet)
 
 urlpatterns = [
+    path('subscription/', SubscriptionOverviewView.as_view(), name='subscription-overview'),
+    path('checkout/', SubscriptionCheckoutView.as_view(), name='subscription-checkout'),
+    path('webhook/', SubscriptionWebhookView.as_view(), name='subscription-webhook'),
+    path('analytics/', FinancialAnalyticsView.as_view(), name='financial-analytics'),
     path('', include(router.urls)),
 ]

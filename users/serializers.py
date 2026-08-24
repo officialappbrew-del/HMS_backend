@@ -266,7 +266,29 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         
         if not reset_token.is_valid():
             raise serializers.ValidationError({'token': 'Reset token has expired or already been used.'})
+
+        if not reset_token.verified_at:
+            raise serializers.ValidationError({'token': 'Reset token must be verified before choosing a new password.'})
         
+        data['reset_token'] = reset_token
+        return data
+
+
+class PasswordResetVerifySerializer(serializers.Serializer):
+    token = serializers.CharField(required=True)
+
+    def validate(self, data):
+        token = data.get('token', '').strip()
+        if not token:
+            raise serializers.ValidationError({'token': 'Reset token is required.'})
+
+        reset_token = PasswordResetToken.objects.filter(token=token).first()
+        if not reset_token:
+            raise serializers.ValidationError({'token': 'Invalid reset token.'})
+        if not reset_token.is_valid():
+            raise serializers.ValidationError({'token': 'Reset token has expired or already been used.'})
+
+        data['token'] = token
         data['reset_token'] = reset_token
         return data
 

@@ -141,6 +141,11 @@ class JWTAuthentication(authentication.BaseAuthentication):
         auth_header = request.headers.get('Authorization')
 
         if not auth_header:
+            cookie_token = request.COOKIES.get('access_token')
+            if cookie_token:
+                auth_header = f'Bearer {cookie_token}'
+
+        if not auth_header:
             return None
 
         try:
@@ -190,7 +195,7 @@ class JWTAuthentication(authentication.BaseAuthentication):
                     tenant = Tenant.objects.filter(domain=payload.get('tenant_domain')).first()
 
                 if tenant is None:
-                    raise AuthenticationFailed('Tenant not found')
+                    return None
 
                 user = None
 
@@ -322,6 +327,19 @@ class CookieJWTAuthentication(authentication.BaseAuthentication):
     COOKIE_NAME = 'access_token'
 
     def authenticate(self, request):
+        # Public auth endpoints must recover from stale cookies. Keep the
+        # authenticated profile endpoint available for cookie-backed sessions.
+        public_auth_paths = (
+            '/api/v1/auth/login/',
+            '/api/v1/auth/token/refresh/',
+            '/api/v1/auth/logout/',
+            '/api/v1/auth/verify-2fa/',
+            '/api/v1/auth/two-factor/setup/',
+            '/api/v1/auth/two-factor/backup-codes/',
+        )
+        if request.path.startswith(public_auth_paths):
+            return None
+
         token = request.COOKIES.get(self.COOKIE_NAME)
         if not token:
             return None

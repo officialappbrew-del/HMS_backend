@@ -1,0 +1,19 @@
+Subscription Expiry Notice
+
+Your subscription is expiring soon.
+
+Subscription Details:
+- Facility: {{ tenant_name }}
+- Plan: {{ plan_name }}
+- Subscription End Date: {{ subscription_end_date }}
+- Days Remaining: {{ days_remaining }} days
+
+Action Required:
+Your subscription will expire in {{ days_remaining }} days. To avoid service interruption, please renew your subscription or contact our support team.
+
+Contact Support: {{ support_email }}
+
+If you have any questions or need assistance, please don't hesitate to reach out. We're here to help ensure a smooth continuation of your services.
+
+Best regards,
+{{ app_name }} Team

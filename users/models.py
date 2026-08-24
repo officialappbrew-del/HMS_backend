@@ -528,6 +528,7 @@ class PasswordResetToken(BaseModel):
     email = models.EmailField()
     token = models.CharField(max_length=64, unique=True)
     is_used = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField()
     user_type = models.CharField(max_length=20, choices=[
         ('global', 'Global User'),

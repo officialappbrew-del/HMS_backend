@@ -10,6 +10,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import permissions
 from tenants.views import PublicTenantListView
+from smartcare_hms.health import health_check
 
 # Test public endpoint
 @api_view(['GET'])
@@ -20,6 +21,7 @@ def test_public(request):
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('test-public/', test_public, name='test-public'),
+    path('health/', health_check, name='health'),
     path('api/v1/auth/', include('users.urls')),
     path('api/v1/core/', include('core.urls')),
     path('api/v1/tenants/', include('tenants.urls')),

@@ -12,6 +12,7 @@ from django.db import transaction
 from django.db import IntegrityError
 from django.db.models import Count, Sum, Q
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.hashers import make_password
 from django.core.validators import validate_email
 from django.utils import timezone
 from django.conf import settings
@@ -22,7 +23,8 @@ from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup, BulkTenantUserUpload,
-    CommunicationProfile, SupportTicket
+    CommunicationProfile, SupportTicket, TenantDomain,
+    SubscriptionPayment
 )
 from .serializers import (
     TenantSerializer, SubscriptionPlanSerializer, TenantUserSerializer,
@@ -30,19 +32,36 @@ from .serializers import (
     TenantInvitationSerializer, AcceptInvitationSerializer,
     TenantActivityLogSerializer, TenantBackupSerializer, TenantSummarySerializer,
     BulkTenantUserUploadSerializer, CommunicationProfileSerializer,
-    _check_employee_id_globally_unique
+    _check_employee_id_globally_unique, SelfSignupSerializer,
 )
 from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
-from core.models import AuditLog
+from core.models import AuditLog, SystemSetting, Country, FacilityType
 from users.serializers import PasswordChangeSerializer
 from superadmin.serializers import SupportTicketSerializer
+
+import uuid
+import json
+import hmac
+import hashlib
+import datetime
+import urllib.request
+import urllib.error
+import requests
+from django.core.signing import dumps as signed_dumps, loads as signed_loads, BadSignature, SignatureExpired
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
+
+logger = logging.getLogger(__name__)
 from rest_framework import status
 from django.db import connection
+from core.payment_settings import get_payment_setting, payment_setting_configured
 
 
 class StandardPagination(PageNumberPagination):
@@ -1202,6 +1221,11 @@ class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     serializer_class = SubscriptionPlanSerializer
     pagination_class = StandardPagination
     permission_classes = [IsSystemAdmin]
+
+    def get_permissions(self):
+        if self.request.method in permissions.SAFE_METHODS:
+            return [permissions.AllowAny()]
+        return super().get_permissions()
     
     def perform_create(self, serializer):
         plan = serializer.save()
@@ -1268,6 +1292,46 @@ class TenantUserViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     ordering = ['username', 'email']
     ordering_fields = ['username', 'email', 'first_name', 'last_name', 'role']
+
+    def create(self, request, *args, **kwargs):
+        temporary_password = request.data.get('password')
+        response = super().create(request, *args, **kwargs)
+        if response.status_code >= 400:
+            return response
+
+        staff = self.get_queryset().filter(pk=response.data.get('id')).first()
+        if not staff or not temporary_password or not staff.email:
+            response.data['welcome_email_status'] = 'not_queued'
+            return response
+
+        from users.tasks import send_tenant_welcome_email, send_tenant_welcome_email_task
+        login_url = f"{getattr(settings, 'FRONTEND_URL', '').rstrip('/')}/login"
+        email_args = (
+            staff.email,
+            staff.get_full_name(),
+            staff.tenant.name,
+            temporary_password,
+            login_url,
+            staff.id,
+        )
+        try:
+            send_tenant_welcome_email_task.delay(*email_args)
+            response.data['welcome_email_status'] = 'queued'
+        except Exception:
+            logger.exception('Unable to queue welcome email for tenant user %s; using direct send', staff.pk)
+            try:
+                send_tenant_welcome_email(*email_args)
+                response.data['welcome_email_status'] = 'sent'
+            except Exception:
+                logger.exception('Unable to send welcome email directly for tenant user %s', staff.pk)
+                response.data['welcome_email_status'] = 'not_queued'
+
+        response.data['credentials'] = {
+            'employee_id': staff.employee_id or staff.username,
+            'email': staff.email,
+            'password': temporary_password,
+        }
+        return response
 
     def _is_request_root_admin(self):
         user = self.request.user
@@ -2373,3 +2437,505 @@ class TenantSupportTicketViewSet(viewsets.ModelViewSet):
             created_by_email=creator_email,
             created_by_role=creator_role,
         )
+
+
+# ---------------------------------------------------------------------------
+# Helpers & shared configuration for self-service signup / payments
+# ---------------------------------------------------------------------------
+def _ensure_public_schema():
+    """Ensure DB queries run on the public schema (global data)."""
+    try:
+        connection.set_schema_to_public()
+    except Exception:
+        pass
+
+
+def _get_system_setting(key, default=None):
+    """Read a platform SystemSetting value (fail-open to ``default``)."""
+    try:
+        return SystemSetting.objects.get(key=key).value
+    except SystemSetting.DoesNotExist:
+        return default
+
+
+def _bool_setting(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() not in ('false', '0', 'no', 'off', '')
+
+
+DEFAULT_SIGNUP_DEPARTMENTS = [
+    {'name': 'Administration', 'code': 'ADMIN', 'is_clinical': False},
+    {'name': 'Outpatient Department', 'code': 'OPD', 'is_clinical': True},
+    {'name': 'Inpatient Department', 'code': 'IPD', 'is_clinical': True},
+    {'name': 'Emergency Department', 'code': 'ER', 'is_clinical': True},
+    {'name': 'Pharmacy', 'code': 'PHARM', 'is_clinical': False},
+    {'name': 'Laboratory', 'code': 'LAB', 'is_clinical': False},
+    {'name': 'Radiology', 'code': 'RAD', 'is_clinical': False},
+    {'name': 'Billing', 'code': 'BILL', 'is_clinical': False},
+]
+
+
+def _generate_unique_tenant_code(name):
+    """Generate a unique tenant code mirroring Tenant.generate_tenant_code()."""
+    import random
+    import string
+    base = (name[:3].upper() if name else 'TNT') or 'TNT'
+    for _ in range(12):
+        code = f"{base}{''.join(random.choices(string.digits, k=4))}"
+        if not Tenant.objects.filter(code=code).exists():
+            return code
+    return f"{base}{uuid.uuid4().hex[:8].upper()}"
+
+
+def _generate_unique_domain(code):
+    """Generate a unique tenant subdomain on the platform domain."""
+    candidate = f"{code.lower()}.smartcarehms.local"
+    counter = 1
+    while Tenant.objects.filter(domain=candidate).exists():
+        counter += 1
+        candidate = f"{code.lower()}-{counter}.smartcarehms.local"
+    return candidate
+
+
+def _create_root_admin(tenant, admin_data, is_active=False):
+    """Create the tenant root admin (mirrors superadmin TenantAdminCreateView)."""
+    first_name = admin_data['admin_first_name']
+    last_name = admin_data['admin_last_name']
+    email = admin_data['admin_email']
+    phone = admin_data.get('admin_phone') or ''
+
+    username_base = f"{first_name.lower()}.{last_name.lower()}".replace(' ', '_')
+    unique_username = username_base
+    counter = 1
+    while TenantUser.objects.filter(tenant=tenant, username=unique_username).exists():
+        unique_username = f"{username_base}{counter}"
+        counter += 1
+
+    admin_user = TenantUser.objects.create(
+        tenant=tenant,
+        username=unique_username,
+        email=email,
+        first_name=first_name,
+        last_name=last_name,
+        phone=phone,
+        role='admin',
+        employee_id=None,
+        is_staff=True,
+        is_active=is_active,
+        is_root_admin=True,
+    )
+    if admin_data.get('password_hash'):
+        admin_user.password = admin_data['password_hash']
+    else:
+        admin_user.set_password(admin_data['password'])
+    admin_user.save()
+    return admin_user
+
+
+def _generate_verification_token(tenant, admin_user):
+    payload = {
+        'tenant_public_id': str(tenant.public_id),
+        'admin_email': admin_user.email,
+        'admin_id': admin_user.id,
+    }
+    return signed_dumps(payload, salt='tenant-email-verification')
+
+
+def _send_verification_email(tenant, admin_user):
+    """Send the email-verification message (Django SMTP integration).
+
+    Returns ``(sent: bool, error: str|None)``. Mirrors the admin welcome-email
+    identity resolution so the tenant's configured sender is used when present.
+    """
+    token = _generate_verification_token(tenant, admin_user)
+    verify_url = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')}/verify-email?token={token}"
+
+    base_context = {
+        'admin_name': admin_user.get_full_name() or admin_user.username,
+        'tenant_name': tenant.name,
+        'verify_url': verify_url,
+        'login_id': admin_user.employee_id or admin_user.id,
+        'admin_email': admin_user.email,
+        'year': datetime.date.today().year,
+        'app_name': getattr(settings, 'APP_NAME', 'SmartCare HMS'),
+        'support_email': _get_system_setting('support_email', 'support@smartcarehms.com'),
+    }
+    context = build_email_context(tenant, extra=base_context)
+    try:
+        identity = resolve_email_identity(tenant)
+        from_email = identity['from_email'] or getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+        from_name = identity['from_name'] or tenant.name
+    except Exception:
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+        from_name = tenant.name
+    if str(from_email).lower() == admin_user.email.lower():
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+
+    subject = f'Verify your {tenant.name} account'
+    try:
+        html_message = render_to_string('tenants/email_verification_email.html', context)
+        plain_message = render_to_string('tenants/email_verification_email.txt', context)
+        send_mail(
+            subject=subject,
+            message=plain_message,
+            from_email=f'{from_name} <{from_email}>',
+            recipient_list=[admin_user.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+        return True, None
+    except Exception as exc:
+        logger.error('Failed to send verification email to %s: %s', admin_user.email, exc)
+        return False, str(exc)
+
+
+def _paypal_access_token():
+    client_id = get_payment_setting('paypal_client_id')
+    client_secret = get_payment_setting('paypal_client_secret')
+    response = requests.post(
+        f"{get_payment_setting('paypal_base_url', 'https://api-m.sandbox.paypal.com')}/v1/oauth2/token",
+        auth=(client_id, client_secret),
+        data={'grant_type': 'client_credentials'},
+        headers={'Accept': 'application/json', 'Accept-Language': 'en_US'},
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json()['access_token']
+
+
+def _initialize_signup_payment(plan, billing_period, payment_method, signup_data):
+    amounts = {
+        'monthly': plan.price_monthly,
+        'quarterly': plan.price_quarterly,
+        'yearly': plan.price_yearly,
+    }
+    amount = amounts[billing_period]
+    if amount <= 0:
+        raise ValueError('The selected subscription plan must have a payable price.')
+    if payment_method == 'paystack' and not payment_setting_configured('paystack_secret_key'):
+        raise ValueError('Paystack is not configured.')
+    if payment_method == 'paypal' and not (
+        payment_setting_configured('paypal_client_id') and payment_setting_configured('paypal_client_secret')
+    ):
+        raise ValueError('PayPal is not configured.')
+    if payment_method == 'paypal' and plan.currency not in {'USD', 'EUR', 'GBP', 'CAD', 'AUD'}:
+        raise ValueError('PayPal requires a plan currency supported by PayPal, such as USD, EUR, GBP, CAD, or AUD.')
+
+    reference = f"HMS-SIGNUP-{uuid.uuid4().hex[:24].upper()}"
+    payment = SubscriptionPayment.objects.create(
+        tenant=None,
+        plan=plan,
+        reference=reference,
+        amount=amount,
+        currency=plan.currency,
+        billing_period=billing_period,
+        gateway=payment_method,
+        signup_data=signup_data,
+    )
+    try:
+        if payment_method == 'paystack':
+            response = requests.post(
+                'https://api.paystack.co/transaction/initialize',
+                headers={'Authorization': f"Bearer {get_payment_setting('paystack_secret_key')}"},
+                json={
+                    'email': signup_data['email'],
+                    'amount': int(amount * 100),
+                    'currency': plan.currency,
+                    'reference': reference,
+                    'callback_url': f'{settings.FRONTEND_URL}/signup?payment=complete',
+                    'metadata': {'payment_id': payment.id, 'signup': True},
+                },
+                timeout=15,
+            )
+            gateway_data = response.json()
+            if not response.ok or not gateway_data.get('status'):
+                raise requests.RequestException(gateway_data.get('message', 'Payment initialization failed'))
+            checkout = {
+                'authorization_url': gateway_data['data']['authorization_url'],
+                'access_code': gateway_data['data']['access_code'],
+            }
+        else:
+            token = _paypal_access_token()
+            response = requests.post(
+                f"{get_payment_setting('paypal_base_url', 'https://api-m.sandbox.paypal.com')}/v2/checkout/orders",
+                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+                json={
+                    'intent': 'CAPTURE',
+                    'purchase_units': [{
+                        'reference_id': reference,
+                        'custom_id': reference,
+                        'amount': {'currency_code': plan.currency, 'value': f'{amount:.2f}'},
+                    }],
+                    'application_context': {
+                        'return_url': f'{settings.FRONTEND_URL}/signup?payment=complete',
+                        'cancel_url': f'{settings.FRONTEND_URL}/signup?payment=cancelled',
+                    },
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            gateway_data = response.json()
+            approval = next((link['href'] for link in gateway_data.get('links', []) if link.get('rel') == 'approve'), None)
+            if not approval:
+                raise requests.RequestException('PayPal did not return an approval URL.')
+            checkout = {'authorization_url': approval, 'order_id': gateway_data['id']}
+    except (requests.RequestException, ValueError) as exc:
+        payment.status = SubscriptionPayment.Status.FAILED
+        payment.gateway_response = {'error': str(exc)}
+        payment.save(update_fields=['status', 'gateway_response', 'updated_at'])
+        raise RuntimeError('Unable to initialize payment.') from exc
+
+    payment.gateway_response = gateway_data.get('data', {})
+    payment.save(update_fields=['gateway_response', 'updated_at'])
+    return {
+        'reference': reference,
+        'gateway': payment_method,
+        **checkout,
+        'amount': str(amount),
+        'currency': plan.currency,
+        'billing_period': billing_period,
+    }
+
+
+def _provision_paid_signup(payment):
+    data = payment.signup_data
+    country = Country.objects.get(id=data['country_id'])
+    facility_type = FacilityType.objects.get(id=data['facility_type_id'])
+    registration_number = data['registration_number']
+    code = _generate_unique_tenant_code(data['hospital_name'])
+    domain = _generate_unique_domain(code)
+    tenant = Tenant.objects.create(
+        name=data['hospital_name'], code=code, domain=domain,
+        schema_name=f'tenant_{code.lower()}', email=data['email'], phone=data['phone'],
+        address=data['address'], city=data['city'], state_id=data.get('state_id'),
+        lga_id=data.get('lga_id'), country=country, facility_type=facility_type,
+        registration_number=registration_number, tax_id=data.get('tax_id', ''),
+        website=data.get('website', ''), subscription_plan=payment.plan,
+        subscription_status=Tenant.SubscriptionStatus.SUSPENDED,
+        monthly_fee=0, billing_email=data['email'], payment_method=payment.gateway,
+        is_active=True,
+    )
+    TenantSetting.objects.create(tenant=tenant)
+    CommunicationProfile.objects.create(tenant=tenant)
+    for dept in DEFAULT_SIGNUP_DEPARTMENTS:
+        Department.objects.create(tenant=tenant, **dept)
+    admin_user = _create_root_admin(
+        tenant,
+        {
+            'admin_first_name': data['admin_first_name'],
+            'admin_last_name': data['admin_last_name'],
+            'admin_email': data['admin_email'],
+            'admin_phone': data.get('admin_phone', ''),
+            'password_hash': data['password_hash'],
+        },
+        is_active=False,
+    )
+    TenantDomain.objects.get_or_create(domain=domain, defaults={'tenant': tenant, 'is_primary': True})
+    try:
+        tenant.create_schema()
+    except Exception as exc:
+        logger.warning('create_schema failed for tenant %s: %s', tenant.id, exc)
+    return tenant, admin_user
+
+
+class SelfSignupView(APIView):
+    """Public, unauthenticated tenant signup.
+
+    Creates a trial tenant + root admin (inactive until email verification),
+    mirroring ``superadmin.TenantAdminCreateView`` provisioning so admin-created
+    and self-service tenants are provisioned identically.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        _ensure_public_schema()
+        serializer = SelfSignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if not _bool_setting(_get_system_setting('allow_new_signups', 'true')):
+            return Response({'error': 'Self-service signups are currently closed.'},
+                            status=status.HTTP_423_LOCKED)
+
+        configured_payment_method = _get_system_setting('subscription_payment_method', 'paystack')
+        if data.get('payment_method', 'paystack') != configured_payment_method:
+            return Response({'error': 'The selected payment method is not currently available.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        plan = None
+        plan_id = data.get('plan_id')
+        if plan_id:
+            try:
+                plan = SubscriptionPlan.objects.get(id=plan_id, is_active=True)
+            except SubscriptionPlan.DoesNotExist:
+                return Response({'error': 'Invalid subscription plan.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+        if plan is None:
+            plan = (
+                SubscriptionPlan.objects.filter(is_default=True, is_active=True).first()
+                or SubscriptionPlan.objects.filter(is_active=True)
+                .order_by('display_order', 'price_monthly').first()
+            )
+        if plan is None:
+            return Response({'error': 'No active subscription plan is available.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if Tenant.objects.filter(email=data['email']).exists():
+            return Response({'error': {'email': 'This billing email is already registered.'}},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        country = None
+        country_id = data.get('country')
+        try:
+            country = Country.objects.get(id=country_id) if country_id else Country.objects.first()
+        except Country.DoesNotExist:
+            return Response({'error': {'country': 'Invalid country.'}}, status=status.HTTP_400_BAD_REQUEST)
+        if country is None:
+            return Response({'error': 'No country is available on the platform.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        facility_type = None
+        if data.get('facility_type'):
+            try:
+                facility_type = FacilityType.objects.get(id=data['facility_type'])
+            except FacilityType.DoesNotExist:
+                return Response({'error': {'facility_type': 'Invalid facility type.'}},
+                                status=status.HTTP_400_BAD_REQUEST)
+        if facility_type is None:
+            facility_type = FacilityType.objects.first()
+        if facility_type is None:
+            return Response({'error': 'No facility type is available on the platform.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        registration_number = (data.get('registration_number') or '').strip().upper()
+        if not registration_number:
+            registration_number = f"REG-{uuid.uuid4().hex[:8].upper()}"
+        signup_data = {
+            'hospital_name': data['hospital_name'],
+            'email': data['email'], 'phone': data['phone'],
+            'address': data['address'], 'city': data['city'],
+            'state_id': data.get('state'), 'lga_id': data.get('lga'),
+            'country_id': country.id, 'facility_type_id': facility_type.id,
+            'registration_number': registration_number,
+            'tax_id': (data.get('tax_id') or '').strip(),
+            'website': (data.get('website') or '').strip(),
+            'admin_first_name': data['admin_first_name'],
+            'admin_last_name': data['admin_last_name'],
+            'admin_email': data['admin_email'],
+            'admin_phone': data.get('admin_phone') or '',
+            'password_hash': make_password(data['password']),
+        }
+        try:
+            checkout = _initialize_signup_payment(
+                plan, data.get('billing_period', 'monthly'), data.get('payment_method', 'paystack'), signup_data
+            )
+        except (ValueError, RuntimeError) as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({
+            'payment_pending': True,
+            'payment_required': True,
+            'checkout': checkout,
+            'message': 'Complete payment to finish creating your workspace and root administrator account.',
+        }, status=status.HTTP_202_ACCEPTED)
+
+
+class VerifyEmailView(APIView):
+    """Public, unauthenticated email verification endpoint."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        token = request.data.get('token') or request.GET.get('token')
+        if not token:
+            return Response({'error': 'Verification token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            payload = signed_loads(token, max_age=86400, salt='tenant-email-verification')
+        except SignatureExpired:
+            return Response({'error': 'Verification link has expired. Please sign up again.'},
+                            status=status.HTTP_410_GONE)
+        except BadSignature:
+            return Response({'error': 'Invalid verification link.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        _ensure_public_schema()
+        tenant = get_object_or_404(Tenant, public_id=payload.get('tenant_public_id'))
+        admin_user = TenantUser.objects.filter(
+            tenant=tenant, email__iexact=payload.get('admin_email'), is_root_admin=True
+        ).first()
+        if not admin_user:
+            return Response({'error': 'Root admin user not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        was_inactive = not admin_user.is_active
+        admin_user.is_active = True
+        admin_user.is_staff = True
+        admin_user.account_locked_until = None
+        admin_user.failed_login_attempts = 0
+        admin_user.save(update_fields=['is_active', 'is_staff', 'account_locked_until',
+                                       'failed_login_attempts'])
+
+        AuditLog.objects.create(
+            tenant=tenant,
+            action='verify_email',
+            resource_type='tenant_user',
+            resource_id=str(admin_user.id),
+            actor=payload.get('admin_email', ''),
+            title='Email verified; root admin activated',
+            new_values={'tenant': str(tenant.public_id), 'is_active': True},
+        )
+        return Response({
+            'verified': True,
+            'message': 'Account verified successfully. You can now log in.',
+            'login_url': '/login',
+            'payment_required': tenant.subscription_status != Tenant.SubscriptionStatus.ACTIVE,
+        })
+
+
+class PublicConfigurationView(APIView):
+    """Public, unauthenticated platform configuration for signup/landing.
+
+    Exposes the signup gate, available subscription plans and the reference
+    data (countries / facility types) the signup form needs.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        _ensure_public_schema()
+        signups_open = _bool_setting(_get_system_setting('allow_new_signups', 'true'))
+        configured_payment_method = _get_system_setting('subscription_payment_method', 'paystack')
+        plans = SubscriptionPlan.objects.filter(is_active=True).order_by('display_order', 'price_monthly')
+        countries = Country.objects.filter(is_active=True).order_by('name')
+        facility_types = FacilityType.objects.all().order_by('name')
+        return Response({
+            'allow_new_signups': signups_open,
+            'subscription_plans': [
+                {
+                    'id': p.id, 'name': p.name, 'code': p.code,
+                    'price_monthly': p.price_monthly, 'price_quarterly': p.price_quarterly,
+                    'price_yearly': p.price_yearly, 'currency': p.currency,
+                    'max_users': p.max_users, 'max_patients': p.max_patients,
+                    'is_default': p.is_default, 'trial_period_days': p.trial_period_days,
+                } for p in plans
+            ],
+            'countries': [
+                {'id': c.id, 'name': c.name, 'code': c.code,
+                 'phone_code': c.phone_code, 'currency': c.currency} for c in countries
+            ],
+            'facility_types': [
+                {'id': f.id, 'name': f.name, 'code': f.code, 'description': f.description}
+                for f in facility_types
+            ],
+            'payment_methods': [configured_payment_method] if (
+                (configured_payment_method == 'paystack' and payment_setting_configured('paystack_secret_key'))
+                or (configured_payment_method == 'paypal' and payment_setting_configured('paypal_client_id') and payment_setting_configured('paypal_client_secret'))
+            ) else [],
+            'default_payment_method': configured_payment_method if (
+                (configured_payment_method == 'paystack' and payment_setting_configured('paystack_secret_key'))
+                or (configured_payment_method == 'paypal' and payment_setting_configured('paypal_client_id') and payment_setting_configured('paypal_client_secret'))
+            ) else '',
+        })
+
+
+

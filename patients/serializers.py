@@ -113,6 +113,11 @@ class PatientLoginSerializer(serializers.Serializer):
 class PatientVisitSerializer(serializers.ModelSerializer):
     """Serializer for PatientVisit model."""
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
+    patient_mrn = serializers.CharField(source='patient.mrn', read_only=True)
+    patient_hospital_number = serializers.CharField(source='patient.hospital_number', read_only=True)
+    patient_gender = serializers.CharField(source='patient.gender', read_only=True)
+    patient_age = serializers.IntegerField(source='patient.age', read_only=True)
+    patient_insurance = serializers.CharField(source='patient.insurance_company', read_only=True)
     doctor_name = serializers.CharField(source='doctor.get_full_name', read_only=True)
     nurse_name = serializers.CharField(source='nurse.get_full_name', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)

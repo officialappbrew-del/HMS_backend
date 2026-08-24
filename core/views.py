@@ -8,11 +8,12 @@ from django.utils import timezone
 from django.db.models import Count, Q, F
 from django.db import connection as django_connection
 from django.core.cache import cache
+from django.core.exceptions import ObjectDoesNotExist
 from patients.models import Patient, PatientVisit
 from clinical.models import Prescription, VitalSign, VitalSignAlert
 from pharmacy.models import Drug
 from billing.models import Invoice
-from tenants.models import TenantUser, Department
+from tenants.models import Tenant, TenantUser, Department
 from .models import (
     Country, State, LGA, FacilityType, Specialization,
     Language, SystemSetting, AuditLog
@@ -33,10 +34,34 @@ class TenantScopedModelViewSet(viewsets.ModelViewSet):
 
     def _get_request_tenant(self):
         user = self.request.user
-        if hasattr(user, 'tenant_user') and user.tenant_user:
-            return user.tenant_user.tenant
-        if hasattr(user, 'tenant') and user.tenant:
-            return user.tenant
+        try:
+            tenant_user = getattr(user, 'tenant_user', None)
+            tenant = getattr(tenant_user, 'tenant', None)
+            if tenant:
+                return tenant
+        except ObjectDoesNotExist:
+            pass
+
+        try:
+            tenant = getattr(user, 'tenant', None)
+            if tenant:
+                return tenant
+        except ObjectDoesNotExist:
+            pass
+
+        request_tenant = getattr(self.request, 'tenant', None)
+        if isinstance(request_tenant, Tenant):
+            return request_tenant
+
+        tenant_identifier = (
+            self.request.headers.get('X-Tenant-ID')
+            or self.request.query_params.get('tenant_id')
+        )
+        if tenant_identifier and (
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'role', None) in ('super_admin', 'system_admin')
+        ):
+            return Tenant.objects.filter(public_id=tenant_identifier).first()
         return None
 
     def get_queryset(self):
@@ -181,12 +206,39 @@ class DashboardInsightsViewSet(viewsets.ViewSet):
 
     def _build_payload(self, request):
         user = request.user
-        tenant_user = getattr(user, 'tenant_user', None)
-        if not tenant_user:
-            return None, Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            tenant_user = getattr(user, 'tenant_user', None)
+            tenant = getattr(tenant_user, 'tenant', None)
+            role = (getattr(tenant_user, 'role', None) or getattr(user, 'role', '') or '').lower()
+        except ObjectDoesNotExist:
+            tenant_user = None
+            tenant = None
+            role = (getattr(user, 'role', '') or '').lower()
 
-        tenant = tenant_user.tenant
-        role = (tenant_user.role or '').lower()
+        if tenant is None and role in {'super_admin', 'system_admin'}:
+            tenant_identifier = (
+                request.headers.get('X-Tenant-ID')
+                or request.query_params.get('tenant_id')
+            )
+            if tenant_identifier:
+                tenant = Tenant.objects.filter(public_id=tenant_identifier).first()
+
+        if tenant is None:
+            return role, Response({
+                'role': role,
+                'summary': {
+                    'patients': 0,
+                    'waiting_visits': 0,
+                    'pending_prescriptions': 0,
+                    'low_stock_drugs': 0,
+                    'overdue_invoices': 0,
+                    'critical_alerts': 0,
+                    'today': timezone.now().date().isoformat(),
+                },
+                'alerts': [],
+                'tasks': [],
+                'quick_actions': [],
+            })
 
         today = timezone.now().date()
         queryset = Patient.objects.filter(tenant=tenant)

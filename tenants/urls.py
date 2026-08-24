@@ -1,7 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import create_tenant_admin, create_tenant_root_admin
-
 from .views import (
     TenantViewSet, SubscriptionPlanViewSet, TenantUserViewSet,
     DepartmentViewSet, TenantSettingViewSet, TenantModuleViewSet,
@@ -9,6 +8,7 @@ from .views import (
     TenantActivityLogViewSet, TenantBackupViewSet,
     PublicTenantListView, BulkTenantUserUploadViewSet,
     CommunicationProfileViewSet, TenantSupportTicketViewSet,
+    SelfSignupView, VerifyEmailView, PublicConfigurationView,
 )
 
 router = DefaultRouter()
@@ -31,4 +31,8 @@ urlpatterns = [
     path('tenants/<uuid:tenant_id>/create-admin/', create_tenant_admin, name='create-tenant-admin'),
     path('tenants/<uuid:tenant_id>/create-root-admin/', create_tenant_root_admin, name='create-tenant-root-admin'),
     path('active-tenants/', PublicTenantListView.as_view(), name='public-tenant-list'),
+    # Self-service signup + email verification (public, no auth)
+    path('self-signup/', SelfSignupView.as_view(), name='self-signup'),
+    path('verify-email/', VerifyEmailView.as_view(), name='verify-email'),
+    path('public-config/', PublicConfigurationView.as_view(), name='public-config'),
 ]

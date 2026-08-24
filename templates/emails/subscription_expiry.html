@@ -1,0 +1,73 @@
+{% extends 'emails/base_email.html' %}
+
+{% block title %}{{ tenant_name }} - Subscription Expiry Notice{% endblock %}
+
+{% block content %}
+<tr>
+  <td style="padding: 32px 24px 24px 24px;">
+    <div style="background: linear-gradient(135deg, #C79A3D 0%, #B8860B 100%); border-radius: 12px; padding: 24px; margin-bottom: 24px; text-align: center;">
+      <h1 style="color: #FFFFFF; font-size: 24px; font-weight: 700; margin: 0 0 8px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        Subscription Expiry Notice
+      </h1>
+      <p style="color: rgba(255,255,255,0.9); font-size: 14px; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        Your subscription is expiring soon
+      </p>
+    </div>
+  </td>
+</tr>
+
+<tr>
+  <td style="padding: 0 24px 24px 24px;">
+    <div style="background: #FFFFFF; border: 1px solid #E8E3DC; border-radius: 12px; padding: 24px; margin-bottom: 24px;">
+      <h2 style="color: #1A1A1A; font-size: 16px; font-weight: 600; margin: 0 0 16px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        Subscription Details
+      </h2>
+      
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr>
+          <td style="padding: 8px 0; color: #5A5A5A; font-size: 13px; width: 40%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Facility</td>
+          <td style="padding: 8px 0; color: #1A1A1A; font-size: 13px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">{{ tenant_name }}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #5A5A5A; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Plan</td>
+          <td style="padding: 8px 0; color: #1A1A1A; font-size: 13px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">{{ plan_name }}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #5A5A5A; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Subscription End Date</td>
+          <td style="padding: 8px 0; color: #1A1A1A; font-size: 13px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">{{ subscription_end_date }}</td>
+        </tr>
+        <tr>
+          <td style="padding: 8px 0; color: #5A5A5A; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">Days Remaining</td>
+          <td style="padding: 8px 0; color: #C87D3D; font-size: 13px; font-weight: 600; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">{{ days_remaining }} days</td>
+        </tr>
+      </table>
+    </div>
+  </td>
+</tr>
+
+<tr>
+  <td style="padding: 0 24px 24px 24px;">
+    <div style="background: #F5EDEA; border: 1px solid #E8D6D0; border-radius: 12px; padding: 24px; margin-bottom: 24px;">
+      <h3 style="color: #C8553D; font-size: 14px; font-weight: 600; margin: 0 0 12px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        Action Required
+      </h3>
+      <p style="color: #5A5A5A; font-size: 13px; line-height: 1.6; margin: 0 0 16px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        Your subscription will expire in <strong style="color: #C8553D;">{{ days_remaining }} days</strong>. To avoid service interruption, please renew your subscription or contact our support team.
+      </p>
+      <div style="text-align: center;">
+        <a href="mailto:{{ support_email }}" style="display: inline-block; background: #C8553D; color: #FFFFFF; padding: 10px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+          Contact Support
+        </a>
+      </div>
+    </div>
+  </td>
+</tr>
+
+<tr>
+  <td style="padding: 0 24px 32px 24px;">
+    <p style="color: #5A5A5A; font-size: 12px; line-height: 1.6; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+      If you have any questions or need assistance, please don't hesitate to reach out. We're here to help ensure a smooth continuation of your services.
+    </p>
+  </td>
+</tr>
+{% endblock %}

@@ -16,6 +16,9 @@ class ConsultationNote(BaseModel):
     # HPI / Presenting Complaint
     chief_complaint = models.TextField(blank=True)
     history_of_present_illness = models.TextField(blank=True)
+    duration = models.CharField(max_length=100, blank=True)
+    timing = models.CharField(max_length=200, blank=True)
+    hpi_details = models.JSONField(default=dict, blank=True)
     
     # SOAP
     subjective = models.TextField(blank=True)
@@ -29,6 +32,7 @@ class ConsultationNote(BaseModel):
     ice_ideas = models.TextField(blank=True)
     ice_concerns = models.TextField(blank=True)
     ice_expectations = models.TextField(blank=True)
+    allergies = models.JSONField(default=list, blank=True)
     
     # Past Medical History
     past_medical_history = models.JSONField(default=dict, blank=True)
@@ -86,6 +90,7 @@ class Prescription(BaseModel):
     dosage = models.CharField(max_length=100)
     frequency = models.CharField(max_length=100)
     duration = models.CharField(max_length=100)
+    quantity = models.PositiveIntegerField(default=1)
     route = models.CharField(max_length=50, choices=[
         ('oral', 'Oral'), ('iv', 'IV'), ('im', 'IM'), ('sc', 'SC'),
         ('topical', 'Topical'), ('inhalation', 'Inhalation'), ('rectal', 'Rectal'),

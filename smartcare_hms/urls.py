@@ -7,7 +7,7 @@ from drf_yasg import openapi
 from rest_framework import permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-
+from .health import health_check
 # Test public endpoint
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
@@ -38,6 +38,7 @@ urlpatterns = [
     
     # Test public endpoint
     path('test-public/', test_public, name='test-public'),
+    path('health/', health_check, name='health'),
     
     # API endpoints
     path('api/v1/auth/', include('users.urls')),

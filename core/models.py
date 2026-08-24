@@ -172,6 +172,8 @@ class SystemSetting(models.Model):
     """System-wide settings."""
     key = models.CharField(max_length=100, unique=True)
     value = models.TextField()
+    secret_value = EncryptedField(blank=True, default='')
+    is_secret = models.BooleanField(default=False)
     description = models.TextField(blank=True)
     category = models.CharField(max_length=50, default='general')
     data_type = models.CharField(max_length=20, choices=[

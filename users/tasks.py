@@ -112,91 +112,59 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
         raise self.retry(exc=exc)
 
 
+def send_tenant_welcome_email(recipient_email, admin_name, tenant_name, temporary_password, login_url, user_id=None):
+    """Send tenant welcome email with first-login credentials."""
+    import datetime
+    from tenants.models import TenantUser
+
+    subject = f'Welcome to {tenant_name} - Your Account Has Been Created'
+    base_context = {
+        'admin_name': admin_name,
+        'tenant_name': tenant_name,
+        'temporary_password': temporary_password,
+        'login_url': login_url,
+        'user_id': user_id or '',
+        'admin_email': recipient_email,
+        'year': datetime.date.today().year,
+        'app_name': settings.APP_NAME,
+    }
+    tenant = TenantUser.objects.filter(id=user_id).values_list('tenant', flat=True).first() if user_id else None
+    tenant_instance = None
+    if tenant:
+        tenant_instance = TenantUser.objects.select_related('tenant').get(id=user_id).tenant
+
+    from_email = settings.DEFAULT_FROM_EMAIL
+    from_name = None
+    context = dict(base_context)
+    if tenant_instance:
+        from tenants.communication import build_email_context, resolve_email_identity
+        context = build_email_context(tenant_instance, extra=base_context)
+        identity = resolve_email_identity(tenant_instance)
+        from_email = identity['from_email'] or from_email
+        from_name = identity['from_name'] or tenant_instance.name
+        subject = f'Welcome to {tenant_instance.name} - Account Created'
+
+    if from_name:
+        from_email = f'{from_name} <{from_email}>'
+
+    result = send_mail(
+        subject=subject,
+        message=render_to_string('users/tenant_welcome_email.txt', context),
+        from_email=from_email,
+        recipient_list=[recipient_email],
+        html_message=render_to_string('users/tenant_welcome_email.html', context),
+        fail_silently=False,
+    )
+    return {'status': 'success', 'email': recipient_email, 'messages_sent': result}
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def send_tenant_welcome_email_task(self, recipient_email, admin_name, tenant_name, temporary_password, login_url, user_id=None):
-    """
-    Send tenant welcome email with credentials in background.
-    Retries up to 3 times with 60 seconds delay between retries.
-    Uses per-tenant email identity when available.
-    """
     try:
-        from django.conf import settings
-        import os
-        import datetime
-
-        logger.info(f'🚀 Starting tenant welcome email task for {recipient_email}')
-        logger.info(f'   Email Backend: {settings.EMAIL_BACKEND}')
-        logger.info(f'   DEBUG Mode: {settings.DEBUG}')
-
-        subject = f'Welcome to {tenant_name} - Your Account Has Been Created'
-
-        base_context = {
-            'admin_name': admin_name,
-            'tenant_name': tenant_name,
-            'temporary_password': temporary_password,
-            'login_url': login_url,
-            'user_id': user_id or '',
-            'admin_email': recipient_email,
-            'year': datetime.date.today().year,
-            'app_name': settings.APP_NAME,
-        }
-
-        tenant = None
-        if user_id:
-            try:
-                from tenants.models import TenantUser, Tenant
-                tenant_user = TenantUser.objects.filter(id=user_id).first()
-                if tenant_user:
-                    tenant = tenant_user.tenant
-            except Exception:
-                pass
-
-        from_email = settings.DEFAULT_FROM_EMAIL
-        from_name = None
-
-        context = dict(base_context)
-        if tenant:
-            try:
-                from tenants.communication import build_email_context, resolve_email_identity
-                context = build_email_context(tenant, extra=base_context)
-                identity = resolve_email_identity(tenant)
-                from_email = identity['from_email'] or from_email
-                from_name = identity['from_name'] or None
-                if not from_name and tenant.name:
-                    from_name = tenant.name
-                subject = f'Welcome to {tenant.name} - Account Created'
-            except Exception:
-                pass
-
-        html_message = render_to_string('users/tenant_welcome_email.html', context)
-        plain_message = render_to_string('users/tenant_welcome_email.txt', context)
-
-        if from_name:
-            from_email = f'{from_name} <{from_email}>'
-
-        logger.info(f'   Subject: {subject}')
-        logger.info(f'   To: {recipient_email}')
-        logger.info(f'   From: {from_email}')
-
-        result = send_mail(
-            subject=subject,
-            message=plain_message,
-            from_email=from_email,
-            recipient_list=[recipient_email],
-            html_message=html_message,
-            fail_silently=False,
+        return send_tenant_welcome_email(
+            recipient_email, admin_name, tenant_name, temporary_password, login_url, user_id
         )
-
-        logger.info(f'✅ Tenant welcome email sent successfully to {recipient_email}')
-        logger.info(f'   Send result: {result} message(s) sent')
-
-        if 'filebased' in settings.EMAIL_BACKEND:
-            email_file_path = settings.EMAIL_FILE_PATH if hasattr(settings, 'EMAIL_FILE_PATH') else os.path.join(settings.BASE_DIR, 'logs', 'emails')
-            logger.info(f'   📁 Email file saved to: {email_file_path}')
-
-        return {'status': 'success', 'email': recipient_email, 'messages_sent': result}
-
     except Exception as exc:
-        logger.error(f'❌ Failed to send tenant welcome email to {recipient_email}')
-        logger.exception(f'   Error: {exc}')
+        logger.error(f'Failed to send tenant welcome email to {recipient_email}')
+        logger.exception(f'Error: {exc}')
         raise self.retry(exc=exc)

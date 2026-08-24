@@ -1,0 +1,13 @@
+Welcome to {{ tenant_name }}, {{ staff_name }}.
+
+Your staff account has been created.
+
+Login URL: {{ login_url }}
+Employee ID: {{ employee_id }}
+Email: {{ recipient_email }}
+Temporary password: {{ temporary_password }}
+
+Please sign in and change your password immediately. Do not share these credentials.
+
+Regards,
+{{ tenant_name }}

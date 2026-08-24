@@ -67,9 +67,26 @@ class DispenseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dispense
         fields = '__all__'
-        read_only_fields = ['total_price', 'dispensed_date', 'dispensed_by']
+        read_only_fields = ['total_price', 'dispensed_date', 'dispensed_by', 'tenant']
 
     def validate(self, attrs):
+        prescription = attrs.get('prescription')
+        if prescription:
+            if prescription.status != 'prescribed':
+                raise serializers.ValidationError({'prescription': 'Only prescribed prescriptions can be dispensed.'})
+            if attrs.get('patient') and attrs['patient'].id != prescription.patient_id:
+                raise serializers.ValidationError({'patient': 'Patient must match the prescription.'})
+            drug = attrs.get('drug')
+            prescribed_name = prescription.drug_name.lower()
+            drug_names = {name.lower() for name in (drug.name, drug.generic_name, drug.brand_name) if name}
+            if drug and prescribed_name not in drug_names:
+                raise serializers.ValidationError({'drug': 'Selected inventory drug does not match the prescription.'})
+            if not attrs.get('patient'):
+                attrs['patient'] = prescription.patient
+            requested_quantity = attrs.get('quantity') or 0
+            already_dispensed = sum(item.quantity for item in prescription.dispenses.all())
+            if already_dispensed + requested_quantity > prescription.quantity:
+                raise serializers.ValidationError({'quantity': 'Quantity exceeds the remaining prescribed amount.'})
         if attrs.get('unit_price') is not None and attrs.get('quantity') is not None:
             expected_total = attrs['unit_price'] * attrs['quantity']
             if attrs.get('total_price') and abs(attrs['total_price'] - expected_total) > 0.01:

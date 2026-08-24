@@ -6,6 +6,7 @@ All views require the ``IsSuperAdmin`` permission.
 """
 import logging
 from django.conf import settings
+from core.payment_settings import get_payment_setting, set_payment_setting, payment_setting_configured
 from django.db import connection
 from django.db.models import Count, Sum, Q
 from django.utils import timezone
@@ -17,7 +18,14 @@ from rest_framework.views import APIView
 
 from core.models import SystemSetting, AuditLog
 from core.permissions import IsSuperAdmin, HasTenantPermission, IsSeniorAdmin
-from tenants.models import Tenant, TenantUser, SubscriptionPlan, SupportTicket
+from tenants.models import (
+    Tenant, TenantUser, SubscriptionPlan, SubscriptionPayment, SupportTicket,
+    SubscriptionExpiryNotification,
+)
+from tenants.serializers import (
+    SubscriptionExpiryNotificationSerializer,
+    SubscriptionPlanSerializer,
+)
 from users.models import GlobalUser
 
 from .serializers import (
@@ -857,12 +865,21 @@ class SystemSettingsView(APIView):
             'platform_sms_provider': self._get_value('platform_sms_provider', ''),
             'platform_email_cost_monthly': self._get_value('platform_email_cost_monthly', '0'),
             'platform_sms_cost_monthly': self._get_value('platform_sms_cost_monthly', '0'),
+            'subscription_payment_method': self._get_value('subscription_payment_method', 'paystack'),
         }
         defaults.update(settings_map)
 
         plans = SubscriptionPlan.objects.all().order_by('display_order', 'price_monthly')
         return Response({
             'settings': defaults,
+            'payment_configuration': {
+                'paystack_secret_key_configured': payment_setting_configured('paystack_secret_key'),
+                'paystack_public_key': get_payment_setting('paystack_public_key'),
+                'paypal_client_id': get_payment_setting('paypal_client_id'),
+                'paypal_client_secret_configured': payment_setting_configured('paypal_client_secret'),
+                'paypal_webhook_id_configured': payment_setting_configured('paypal_webhook_id'),
+                'paypal_base_url': get_payment_setting('paypal_base_url', 'https://api-m.sandbox.paypal.com'),
+            },
             'subscription_plans': [
                 {
                     'id': p.id,
@@ -893,9 +910,19 @@ class SystemSettingsView(APIView):
             'platform_name', 'support_email',
             'platform_email_provider', 'platform_sms_provider',
             'platform_email_cost_monthly', 'platform_sms_cost_monthly',
+            'subscription_payment_method',
         }
         for key, value in data.items():
             if key not in allowed_keys:
+                continue
+            if key == 'subscription_payment_method' and value not in {'paystack', 'paypal'}:
+                continue
+            if key in {
+                'paystack_secret_key', 'paystack_public_key', 'paypal_client_id',
+                'paypal_client_secret', 'paypal_webhook_id', 'paypal_base_url',
+            }:
+                if value:
+                    set_payment_setting(key, value)
                 continue
             self._set_value(key, value, category='platform')
 
@@ -1043,9 +1070,15 @@ class SubscriptionAnalyticsView(APIView):
                 subscription_status__in=['active', 'trial'],
                 is_active=True,
             ).count()
-            monthly_revenue = float(plan.price_monthly) * tenant_count
-            quarterly_revenue = float(plan.price_quarterly) * tenant_count
-            yearly_revenue = float(plan.price_yearly) * tenant_count
+            monthly_revenue = float(SubscriptionPayment.objects.filter(
+                plan=plan, billing_period='monthly', status=SubscriptionPayment.Status.SUCCESS
+            ).aggregate(total=Sum('amount'))['total'] or 0)
+            quarterly_revenue = float(SubscriptionPayment.objects.filter(
+                plan=plan, billing_period='quarterly', status=SubscriptionPayment.Status.SUCCESS
+            ).aggregate(total=Sum('amount'))['total'] or 0)
+            yearly_revenue = float(SubscriptionPayment.objects.filter(
+                plan=plan, billing_period='yearly', status=SubscriptionPayment.Status.SUCCESS
+            ).aggregate(total=Sum('amount'))['total'] or 0)
             total_monthly_revenue += monthly_revenue
             total_quarterly_revenue += quarterly_revenue
             total_yearly_revenue += yearly_revenue
@@ -1258,3 +1291,68 @@ class GlobalAdminDetailView(APIView):
 
         admin.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TenantSubscriptionDetailView(APIView):
+    """Get subscription details and notification history for a tenant."""
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request, public_id):
+        _ensure_public_schema()
+        tenant = Tenant.objects.filter(public_id=public_id).first()
+        if not tenant:
+            return Response({'error': 'Tenant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        notifications = SubscriptionExpiryNotification.objects.filter(
+            tenant=tenant
+        ).order_by('-sent_at')[:20]
+
+        return Response({
+            'tenant': {
+                'public_id': str(tenant.public_id),
+                'name': tenant.name,
+                'subscription_status': tenant.subscription_status,
+                'subscription_plan': tenant.subscription_plan_id,
+                'subscription_plan_name': tenant.subscription_plan.name if tenant.subscription_plan else None,
+                'subscription_start_date': tenant.subscription_start_date,
+                'subscription_end_date': tenant.subscription_end_date,
+                'days_remaining': tenant.days_remaining,
+                'is_subscription_expiring_soon': tenant.is_subscription_expiring_soon,
+                'billing_email': tenant.billing_email,
+                'email': tenant.email,
+            },
+            'notifications': SubscriptionExpiryNotificationSerializer(notifications, many=True).data,
+            'payments': list(SubscriptionPayment.objects.filter(tenant=tenant).values(
+                'reference', 'amount', 'currency', 'billing_period', 'status', 'gateway', 'paid_at', 'created_at'
+            )[:20]),
+            'available_plans': SubscriptionPlanSerializer(
+                SubscriptionPlan.objects.filter(is_active=True).order_by('display_order', 'price_monthly'),
+                many=True
+            ).data,
+        })
+
+
+class TenantSubscriptionUpgradeView(APIView):
+    """Start a paid checkout for a tenant's subscription change."""
+    permission_classes = [IsSuperAdmin]
+
+    def post(self, request, public_id):
+        _ensure_public_schema()
+        tenant = Tenant.objects.filter(public_id=public_id).first()
+        if not tenant:
+            return Response({'error': 'Tenant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        new_plan_id = request.data.get('subscription_plan')
+        if not new_plan_id:
+            return Response({'error': 'subscription_plan is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            new_plan = SubscriptionPlan.objects.get(id=new_plan_id, is_active=True)
+        except SubscriptionPlan.DoesNotExist:
+            return Response({'error': 'Invalid subscription plan'}, status=status.HTTP_404_NOT_FOUND)
+
+        from billing.views import SubscriptionCheckoutView
+        data = request.data.copy()
+        data['tenant_id'] = str(tenant.public_id)
+        request._full_data = data
+        return SubscriptionCheckoutView().post(request)

@@ -759,6 +759,11 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                 'doctor': user.tenant_user,
                 'chief_complaint': request.data.get('chief_complaint', ''),
                 'history_of_present_illness': request.data.get('history_of_present_illness', ''),
+                'duration': request.data.get('duration', ''),
+                'timing': request.data.get('timing', ''),
+                'hpi_details': request.data.get('hpi_details', {}),
+                'is_signed': request.data.get('is_signed', False),
+                'signed_at': request.data.get('signed_at'),
                 'subjective': request.data.get('subjective', ''),
                 'objective': request.data.get('objective', ''),
                 'assessment': request.data.get('assessment', ''),
@@ -768,6 +773,7 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                 'ice_ideas': request.data.get('ice_ideas', ''),
                 'ice_concerns': request.data.get('ice_concerns', ''),
                 'ice_expectations': request.data.get('ice_expectations', ''),
+                'allergies': request.data.get('allergies', []),
                 'past_medical_history': request.data.get('past_medical_history', {}),
                 'family_history': request.data.get('family_history', {}),
                 'social_history': request.data.get('social_history', {}),
@@ -785,8 +791,9 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
             }
         )
         
-        # Create prescriptions (auto-approved by doctor)
+        # Replace the visit's prescriptions with the signed consultation list.
         prescriptions = request.data.get('prescriptions', [])
+        Prescription.objects.filter(visit=visit).delete()
         for prescription_data in prescriptions:
             Prescription.objects.create(
                 tenant=visit.tenant,
@@ -796,11 +803,12 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
                 drug_name=prescription_data.get('drug_name', prescription_data.get('medication', '')),
                 dosage=prescription_data.get('dosage', prescription_data.get('dose', '')),
                 frequency=prescription_data.get('frequency', ''),
-                duration=prescription_data.get('duration', 0) or 0,
-                route=prescription_data.get('route', 'oral'),
+                duration=str(prescription_data.get('duration', '') or ''),
+                quantity=int(prescription_data.get('quantity', 1) or 1),
+                route=str(prescription_data.get('route', 'oral') or 'oral').lower(),
                 instructions=prescription_data.get('instructions', ''),
                 special_instructions=prescription_data.get('special_instructions', ''),
-                status='dispensed'
+                status='prescribed'
             )
         
         # Create lab orders (auto-approved)
@@ -953,6 +961,10 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         doctor_filter = self.request.query_params.get('doctor_id')
         if doctor_filter:
             queryset = queryset.filter(doctor_id=doctor_filter)
+        else:
+            tenant_user = getattr(self.request.user, 'tenant_user', None)
+            if tenant_user and getattr(tenant_user, 'role', None) == 'doctor':
+                queryset = queryset.filter(doctor_id=tenant_user.id)
         
         return queryset.order_by('scheduled_date', 'scheduled_time')
     

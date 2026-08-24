@@ -17,6 +17,8 @@ from .views import (
     SupportTicketDetailView,
     GlobalAdminListView,
     GlobalAdminDetailView,
+    TenantSubscriptionDetailView,
+    TenantSubscriptionUpgradeView,
 )
 
 urlpatterns = [
@@ -36,4 +38,6 @@ urlpatterns = [
     path('support-tickets/<int:ticket_id>/', SupportTicketDetailView.as_view(), name='superadmin-support-ticket-detail'),
     path('global-admins/', GlobalAdminListView.as_view(), name='superadmin-global-admins'),
     path('global-admins/<int:admin_id>/', GlobalAdminDetailView.as_view(), name='superadmin-global-admin-detail'),
+    path('tenants/<uuid:public_id>/subscription/', TenantSubscriptionDetailView.as_view(), name='superadmin-tenant-subscription-detail'),
+    path('tenants/<uuid:public_id>/subscription/upgrade/', TenantSubscriptionUpgradeView.as_view(), name='superadmin-tenant-subscription-upgrade'),
 ]

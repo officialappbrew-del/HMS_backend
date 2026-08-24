@@ -19,13 +19,13 @@ country, country_created = Country.objects.get_or_create(
 state, state_created = State.objects.get_or_create(
     code='LAG',
     defaults={
-        'name': 'Lagos',
+        'name': 'Rivers',
         'country': country,
     },
 )
 
 lga, lga_created = LGA.objects.get_or_create(
-    name='Ikeja',
+    name='Port Harcourt',
     defaults={'state': state},
 )
 
@@ -62,16 +62,16 @@ subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
 public_tenant, tenant_created = Tenant.objects.get_or_create(
     schema_name='public',
     defaults={
-        # 'name': 'local',
+        'name': 'local',
         # 'name': 'Render',
-        'NGROK': 'ngrok',
+        # 'NGROK': 'ngrok',
         # 'code': 'RENDER',
         'code': 'LOCAL',
         # 'domain': 'hms-backend-l09g.onrender.com',
-        'domain': '1145-102-90-124-57.ngrok-free.app',
-        # 'domain': 'localhost',
+        # 'domain': '1145-102-90-124-57.ngrok-free.app',
+        'domain': 'localhost',
         # 'email': 'admin.app@onrender.com',
-        'email': 'admin.app@1145-102-90-124-57.ngrok-free.app.com',
+        'email': 'admin.app@local.app.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
@@ -106,8 +106,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
 TenantDomain.objects.get_or_create(
     tenant=public_tenant,
     # domain='hms-backend-l09g.onrender.com',
-    # domain='localhost',
-    domain='loca1145-102-90-124-57.ngrok-free.applhost',
+    domain='localhost',
+    # domain='loca1145-102-90-124-57.ngrok-free.applhost',
     defaults={'is_primary': True},
 )
 

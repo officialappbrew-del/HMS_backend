@@ -182,6 +182,7 @@ INSTALLED_APPS = [
     'pharmacy',
     'lab',
     'billing',
+    'budgeting',
     'emr',
     'cds',
     'audit',
@@ -189,7 +190,7 @@ INSTALLED_APPS = [
     'ndpr',
     'integration',
     'superadmin',
-]
+    ]
 
 # ============================================
 # MIDDLEWARE
@@ -668,10 +669,10 @@ SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 # CELERY SETTINGS
 # ============================================
 CELERY_TASK_ALWAYS_EAGER = False
-if DEBUG:
-    CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='memory://')
-else:
-    CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_BROKER_URL = config(
+    'CELERY_BROKER_URL',
+    default=(_REDIS_URL or ('memory://' if DEBUG else 'redis://localhost:6379/0')),
+)
 
 # Use Redis for the result backend when available to reduce DB writes; fall back
 # to django-db only if explicitly configured (or in dev).
@@ -749,6 +750,11 @@ FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:5173')
 # INTEGRATION KEYS
 # ============================================
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
+PAYSTACK_PUBLIC_KEY = config('PAYSTACK_PUBLIC_KEY', default='')
+PAYPAL_CLIENT_ID = config('PAYPAL_CLIENT_ID', default='')
+PAYPAL_CLIENT_SECRET = config('PAYPAL_CLIENT_SECRET', default='')
+PAYPAL_WEBHOOK_ID = config('PAYPAL_WEBHOOK_ID', default='')
+PAYPAL_BASE_URL = config('PAYPAL_BASE_URL', default='https://api-m.sandbox.paypal.com')
 FLUTTERWAVE_SECRET_KEY = config('FLUTTERWAVE_SECRET_KEY', default='')
 SMS_API_KEY = config('SMS_API_KEY', default='')
 
@@ -776,15 +782,15 @@ TENANT_SCHEMA_URLCONF = 'smartcare_hms.urls'
 # ============================================
 # PRINT DATABASE CONFIGURATION (For verification)
 # ============================================
-print(f"""
-╔═══════════════════════════════════════════════════════════╗
-║  🚀 SMARTCARE HMS - STARTUP COMPLETE                     ║
-╠═══════════════════════════════════════════════════════════╣
-║  Debug Mode:     {DEBUG}                                 ║
-║  Database Mode:  {DATABASE_MODE.upper()}                 ║
-║  Database:       {db_name}                               ║
-║  Host:           {db_host}:{db_port}                     ║
-║  SSL:            {DB_SSL_MODE}                           ║
-║  Frontend URL:   {FRONTEND_URL}                          ║
-╚═══════════════════════════════════════════════════════════╝
-""")
+try:
+    print(f"""
+    SMARTCARE HMS - STARTUP COMPLETE
+    Debug Mode:     {DEBUG}
+    Database Mode:  {DATABASE_MODE.upper()}
+    Database:       {db_name}
+    Host:           {db_host}:{db_port}
+    SSL:            {DB_SSL_MODE}
+    Frontend URL:   {FRONTEND_URL}
+    """)
+except UnicodeEncodeError:
+    pass

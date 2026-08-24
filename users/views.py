@@ -30,6 +30,7 @@ from .serializers import (
     GlobalUserSerializer, LoginSerializer, TwoFASerializer,
     RSASerializer, RSAKeyGenerationSerializer, PasswordChangeSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+    PasswordResetVerifySerializer,
     UserSessionSerializer, SecurityEventSerializer,
     UserNotificationSerializer, TOTPSetupSerializer, BackupCodeSerializer
 )
@@ -633,17 +634,33 @@ class AuthenticationView(APIView):
             )
 
         tenant_domain = data.get('tenant_domain')
-        tenant_id = request.headers.get('X-Tenant-ID') or data.get('tenant_id')
+        explicit_tenant_id = data.get('tenant_id')
+        header_tenant_id = request.headers.get('X-Tenant-ID')
         tenant = None
 
         if tenant_domain:
             tenant = Tenant.objects.filter(domain=tenant_domain).first()
-        elif tenant_id:
-            tenant = Tenant.objects.filter(public_id=tenant_id).first()
-            if tenant is None and str(tenant_id).isdigit():
-                tenant = Tenant.objects.filter(id=int(tenant_id)).first()
+        elif explicit_tenant_id:
+            tenant = Tenant.objects.filter(public_id=explicit_tenant_id).first()
+            if tenant is None and str(explicit_tenant_id).isdigit():
+                tenant = Tenant.objects.filter(id=int(explicit_tenant_id)).first()
         else:
+            # Employee IDs are tenant-scoped. Prefer their tenant prefix over
+            # a stale X-Tenant-ID left in browser storage.
             tenant = self._resolve_tenant_from_identifier(user_id)
+            if tenant is None and header_tenant_id:
+                tenant = Tenant.objects.filter(public_id=header_tenant_id).first()
+                if tenant is None and str(header_tenant_id).isdigit():
+                    tenant = Tenant.objects.filter(id=int(header_tenant_id)).first()
+
+        if tenant and tenant.subscription_status not in {
+            Tenant.SubscriptionStatus.ACTIVE,
+            Tenant.SubscriptionStatus.TRIAL,
+        }:
+            return Response(
+                {'error': 'Tenant is inactive'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if tenant:
             connection.set_schema(tenant.schema_name)
@@ -750,12 +767,7 @@ class AuthenticationView(APIView):
         if len(tenant_prefix) < 2:
             return None
 
-        return Tenant.objects.filter(
-            subscription_status__in=[
-                Tenant.SubscriptionStatus.ACTIVE,
-                Tenant.SubscriptionStatus.TRIAL,
-            ]
-        ).filter(code__istartswith=tenant_prefix).first()
+        return Tenant.objects.filter(code__istartswith=tenant_prefix).first()
 
     def _build_tenant_login_response(self, tenant, user, matched_by):
         refresh = RefreshToken()
@@ -938,35 +950,45 @@ class PasswordResetRequestView(APIView):
                 if user:
                     user_type = 'tenant'
         
-        token_value = uuid.uuid4().hex + uuid.uuid4().hex
-        expires_at = timezone.now() + timezone.timedelta(hours=1)
-        recipient_email = user.email if user else identifier
-        
-        reset_token = PasswordResetToken.objects.create(
-            email=recipient_email,
-            token=token_value,
-            expires_at=expires_at,
-            user_type=user_type or 'global',
-            user_id=user.id if user else 0,
-            ip_address=ip_address,
-            user_agent=user_agent
-        )
-        
-        from .tasks import send_password_reset_email_task
-        logger.info(f'📧 Submitting password reset email task for {recipient_email}')
-        task_result = send_password_reset_email_task.delay(
-            recipient_email=recipient_email,
-            reset_token=reset_token.token,
-            user_name=getattr(user, 'get_full_name', lambda: None)() if user else None,
-        )
-        logger.info(f'   Task ID: {task_result.id}')
-        logger.info(f'   Task State: {task_result.state}')
+        if user and user.email:
+            recipient_email = user.email
+            reset_token = PasswordResetToken.objects.create(
+                email=recipient_email,
+                token=uuid.uuid4().hex + uuid.uuid4().hex,
+                expires_at=timezone.now() + timezone.timedelta(hours=1),
+                user_type=user_type,
+                user_id=user.id,
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+
+            from .tasks import send_password_reset_email_task
+            logger.info('Submitting password reset email task for %s', recipient_email)
+            task_result = send_password_reset_email_task.delay(
+                recipient_email=recipient_email,
+                reset_token=reset_token.token,
+                user_name=getattr(user, 'get_full_name', lambda: None)(),
+            )
+            logger.info('Password reset email task %s state=%s', task_result.id, task_result.state)
         
         return Response({
             'detail': 'If an account exists for this identifier, a password reset email has been sent.',
-            'email': recipient_email,
-            'expires_at': reset_token.expires_at,
         })
+
+
+class PasswordResetVerifyView(APIView):
+    """Verify a reset token before allowing a password to be chosen."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetVerifySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        reset_token = serializer.validated_data['reset_token']
+        reset_token.verified_at = timezone.now()
+        reset_token.save(update_fields=['verified_at'])
+        return Response({'detail': 'Reset token verified. You can now choose a new password.'})
 
 
 class PasswordResetConfirmView(APIView):
