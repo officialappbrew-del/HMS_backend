@@ -224,6 +224,30 @@ class DispenseViewSet(TenantScopedModelViewSet):
             prescription.save(update_fields=['status', 'dispensed_by', 'dispensed_date'])
 
         serializer.save(tenant=tenant, dispensed_by=tenant_user)
+        from billing.models import Invoice, InvoiceItem
+        from django.db.models import Sum
+        invoice = Invoice.objects.filter(
+            tenant=tenant, patient=serializer.instance.patient,
+            visit_id=prescription.visit_id if prescription else None,
+            status__in=['draft', 'issued', 'partially_paid'],
+        ).order_by('-invoice_date').first()
+        if not invoice:
+            invoice = Invoice(tenant=tenant, patient=serializer.instance.patient,
+                              visit_id=prescription.visit_id if prescription else None,
+                              due_date=timezone.now())
+            invoice.save()
+        source_id = f'dispense-{serializer.instance.id}'
+        InvoiceItem.objects.create(
+            invoice=invoice, item_type='drug', description=f'{drug.name} (dispensed)',
+            quantity=quantity, unit_price=serializer.instance.unit_price,
+            line_total=serializer.instance.total_price, drug_id=str(drug.id), service_id=source_id,
+        )
+        invoice.subtotal = invoice.items.aggregate(total=Sum('line_total'))['total'] or 0
+        invoice.total_amount = invoice.subtotal + invoice.tax_amount - invoice.discount_amount
+        invoice.balance_due = invoice.total_amount - invoice.amount_paid
+        invoice.patient_amount = invoice.balance_due
+        invoice.status = 'issued'
+        invoice.save(update_fields=['subtotal', 'total_amount', 'balance_due', 'patient_amount', 'status', 'updated_at'])
 
     def get_queryset(self):
         queryset = super().get_queryset()

@@ -9,6 +9,8 @@ from .views import (
     SubscriptionCheckoutView,
     SubscriptionWebhookView,
     FinancialAnalyticsView,
+    add_patient_charge,
+    record_patient_payment,
 )
 
 router = DefaultRouter()
@@ -18,6 +20,8 @@ router.register(r'insurance-claims', InsuranceClaimViewSet)
 router.register(r'audit-logs', BillingAuditLogViewSet)
 
 urlpatterns = [
+    path('patient-charges/', add_patient_charge, name='add-patient-charge'),
+    path('patient-payments/', record_patient_payment, name='record-patient-payment'),
     path('subscription/', SubscriptionOverviewView.as_view(), name='subscription-overview'),
     path('checkout/', SubscriptionCheckoutView.as_view(), name='subscription-checkout'),
     path('webhook/', SubscriptionWebhookView.as_view(), name='subscription-webhook'),

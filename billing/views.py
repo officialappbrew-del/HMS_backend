@@ -9,13 +9,15 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.db.models import Sum, Count, Q
 from django.utils import timezone
+from patients.models import Patient
 from rest_framework import permissions, viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.views import TenantScopedModelViewSet
 from core.permissions import IsFinanceStaff, IsTenantRootAdminOrGlobalAdmin
+from core.permissions import IsClinicalStaff
 from .models import Invoice, InvoiceItem, Payment, InsuranceClaim, BillingAuditLog
 from tenants.models import Tenant, SubscriptionPayment, SubscriptionPlan
 from pharmacy.models import Sale, SaleItem
@@ -28,6 +30,111 @@ from .serializers import (
     InsuranceClaimSerializer,
     BillingAuditLogSerializer
 )
+
+
+class IsPatientBillingStaff(permissions.BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        tenant_user = getattr(user, 'tenant_user', None)
+        role = getattr(tenant_user, 'role', None) or getattr(user, 'role', None)
+        return bool(user.is_authenticated and role in {
+            'admin', 'tenant_admin', 'doctor', 'receptionist', 'nurse',
+            'pharmacist', 'accountant', 'billing_officer', 'super_admin', 'system_admin'
+        })
+
+
+@api_view(['POST'])
+@permission_classes([IsPatientBillingStaff])
+@transaction.atomic
+def record_patient_payment(request):
+    tenant = getattr(request, 'tenant', None) or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+    invoice_id = request.data.get('invoice')
+    if not tenant or not invoice_id:
+        return Response({'detail': 'Tenant and invoice context are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    invoice = Invoice.objects.filter(id=invoice_id, tenant=tenant).first()
+    if not invoice:
+        return Response({'invoice': ['Invoice not found.']}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        amount = Decimal(str(request.data.get('amount')))
+    except (TypeError, ValueError, ArithmeticError):
+        return Response({'amount': ['Enter a valid payment amount.']}, status=status.HTTP_400_BAD_REQUEST)
+    if amount <= 0:
+        return Response({'amount': ['Payment must be greater than zero.']}, status=status.HTTP_400_BAD_REQUEST)
+    if amount > invoice.balance_due:
+        return Response({'amount': ['Payment cannot exceed the outstanding balance.']}, status=status.HTTP_400_BAD_REQUEST)
+
+    payment = Payment.objects.create(
+        tenant=tenant,
+        invoice=invoice,
+        patient=invoice.patient,
+        amount=amount,
+        payment_method=request.data.get('payment_method', 'cash'),
+        transaction_reference=str(request.data.get('transaction_reference', '')).strip(),
+        received_by=str(request.data.get('received_by', '')).strip() or str(request.user),
+        notes=str(request.data.get('notes', '')).strip(),
+        status='completed',
+    )
+    invoice.amount_paid = invoice.payments.filter(status='completed').aggregate(total=Sum('amount'))['total'] or 0
+    invoice.balance_due = invoice.total_amount - invoice.amount_paid
+    invoice.status = 'paid' if invoice.balance_due <= 0 else 'partially_paid'
+    invoice.save(update_fields=['amount_paid', 'balance_due', 'status', 'updated_at'])
+    return Response(InvoiceSerializer(invoice, context={'request': request}).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsClinicalStaff])
+@transaction.atomic
+def add_patient_charge(request):
+    tenant = getattr(request, 'tenant', None) or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+    if not tenant:
+        return Response({'detail': 'Tenant context required.'}, status=status.HTTP_403_FORBIDDEN)
+
+    patient_id = request.data.get('patient')
+    if not patient_id:
+        return Response({'patient': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+
+    patient = Patient.objects.filter(id=patient_id, tenant=tenant).first()
+    if not patient:
+        return Response({'patient': ['Patient not found.']}, status=status.HTTP_404_NOT_FOUND)
+
+    item_type = request.data.get('item_type', 'service')
+    description = str(request.data.get('description', '')).strip()
+    source_id = str(request.data.get('source_id', '')).strip()
+    try:
+        quantity = int(request.data.get('quantity', 1))
+        unit_price = Decimal(str(request.data.get('unit_price', 0)))
+    except (TypeError, ValueError, ArithmeticError):
+        return Response({'detail': 'Quantity and unit_price must be valid numbers.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not description or quantity <= 0 or unit_price < 0:
+        return Response({'detail': 'Description, positive quantity, and non-negative unit_price are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    visit_id = request.data.get('visit') or None
+    invoice = Invoice.objects.filter(tenant=tenant, patient=patient, visit_id=visit_id, status__in=['draft', 'issued', 'partially_paid']).order_by('-invoice_date').first()
+    if not invoice:
+        invoice = Invoice(tenant=tenant, patient=patient, visit_id=visit_id, due_date=timezone.now())
+        invoice.save()
+
+    if source_id and invoice.items.filter(service_id=source_id).exists():
+        return Response(InvoiceSerializer(invoice, context={'request': request}).data)
+
+    line_total = unit_price * quantity
+    InvoiceItem.objects.create(
+        invoice=invoice,
+        item_type=item_type,
+        description=description,
+        quantity=quantity,
+        unit_price=unit_price,
+        line_total=line_total,
+        service_id=source_id,
+    )
+    invoice.subtotal = invoice.items.aggregate(total=Sum('line_total'))['total'] or 0
+    invoice.total_amount = invoice.subtotal + invoice.tax_amount - invoice.discount_amount
+    invoice.balance_due = invoice.total_amount - invoice.amount_paid
+    invoice.patient_amount = invoice.balance_due
+    invoice.status = 'issued'
+    invoice.save(update_fields=['subtotal', 'total_amount', 'balance_due', 'patient_amount', 'status', 'updated_at'])
+    return Response(InvoiceSerializer(invoice, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
 def _plan_amount(plan, billing_period):

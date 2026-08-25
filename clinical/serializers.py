@@ -61,7 +61,7 @@ class VitalSignSerializer(serializers.ModelSerializer):
     class Meta:
         model = VitalSign
         fields = '__all__'
-        read_only_fields = ['recorded_at', 'bmi']
+        read_only_fields = ['tenant', 'recorded_by', 'recorded_at', 'bmi']
     
     def get_blood_pressure_display(self, obj):
         if obj.blood_pressure_systolic and obj.blood_pressure_diastolic:

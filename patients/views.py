@@ -255,6 +255,32 @@ class PatientViewSet(TenantScopedModelViewSet):
         )
         return Response(serializer.data)
 
+    @action(detail=True, methods=['get'], url_path='journey')
+    def journey(self, request, pk=None):
+        """Return the tenant-scoped clinical and billing journey for a patient."""
+        user = request.user
+        role = getattr(getattr(user, 'tenant_user', None), 'role', None) or getattr(user, 'role', None)
+        allowed_roles = {'admin', 'tenant_admin', 'doctor', 'receptionist', 'nurse', 'pharmacist', 'accountant', 'billing_officer', 'super_admin', 'system_admin'}
+        if role not in allowed_roles and not getattr(user, 'is_staff', False) and not getattr(user, 'is_superuser', False):
+            return Response({'detail': 'You do not have permission to view this patient journey.'}, status=status.HTTP_403_FORBIDDEN)
+
+        patient = self.get_object()
+        from clinical.serializers import PrescriptionSerializer, VitalSignSerializer
+        from billing.serializers import InvoiceSerializer
+
+        visits = PatientVisit.objects.filter(patient=patient, tenant=patient.tenant).order_by('-checkin_time', '-id')
+        prescriptions = patient.prescriptions.select_related('prescribed_by', 'dispensed_by', 'visit').order_by('-prescribed_date')
+        vitals = patient.vital_signs.select_related('recorded_by', 'visit').order_by('-recorded_at')
+        invoices = patient.invoices.prefetch_related('items', 'payments').order_by('-invoice_date')
+
+        return Response({
+            'patient': self.get_serializer(patient).data,
+            'visits': PatientVisitSerializer(visits, many=True).data,
+            'prescriptions': PrescriptionSerializer(prescriptions, many=True).data,
+            'vitals': VitalSignSerializer(vitals, many=True).data,
+            'invoices': InvoiceSerializer(invoices, many=True).data,
+        })
+
     def create(self, request, *args, **kwargs):
         """Create a patient, blocking duplicate name + DOB records.
 

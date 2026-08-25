@@ -108,7 +108,7 @@ class PrescriptionViewSet(TenantScopedModelViewSet):
         prescription_status = self.request.query_params.get('status')
         if prescription_status:
             queryset = queryset.filter(status=prescription_status)
-        return queryset.order_by('-prescribed_date', '-visit__checkin_time', '-id')
+        return queryset.order_by('-created_at', '-visit__checkin_time', '-id')
 
     @action(detail=False, methods=['get'])
     def export(self, request):
