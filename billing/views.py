@@ -7,6 +7,7 @@ import requests
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
+from django.db import connection
 from django.db.models import Sum, Count, Q
 from django.utils import timezone
 from patients.models import Patient
@@ -47,7 +48,11 @@ class IsPatientBillingStaff(permissions.BasePermission):
 @permission_classes([IsPatientBillingStaff])
 @transaction.atomic
 def record_patient_payment(request):
-    tenant = getattr(request, 'tenant', None) or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+    tenant = (
+        getattr(connection, 'tenant', None)
+        or getattr(request, 'tenant', None)
+        or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+    )
     invoice_id = request.data.get('invoice')
     if not tenant or not invoice_id:
         return Response({'detail': 'Tenant and invoice context are required.'}, status=status.HTTP_400_BAD_REQUEST)

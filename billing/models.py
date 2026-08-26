@@ -75,7 +75,8 @@ class Invoice(BaseModel):
             else:
                 super().save(*args, **kwargs)
                 self.invoice_number = f"INV-{self.id}"
-                kwargs['update_fields'] = ['invoice_number']
+                super().save(update_fields=['invoice_number'])
+                return
         super().save(*args, **kwargs)
 
 
@@ -164,7 +165,8 @@ class Payment(BaseModel):
             else:
                 super().save(*args, **kwargs)
                 self.payment_number = f"PAY-{self.id}"
-                kwargs['update_fields'] = ['payment_number']
+                super().save(update_fields=['payment_number'])
+                return
         super().save(*args, **kwargs)
 
 
