@@ -265,19 +265,24 @@ class PatientViewSet(TenantScopedModelViewSet):
             return Response({'detail': 'You do not have permission to view this patient journey.'}, status=status.HTTP_403_FORBIDDEN)
 
         patient = self.get_object()
-        from clinical.serializers import PrescriptionSerializer, VitalSignSerializer
+        from clinical.serializers import ConsultationNoteSerializer, PrescriptionSerializer, VitalSignSerializer
         from billing.serializers import InvoiceSerializer
+        from pharmacy.serializers import DispenseSerializer
 
         visits = PatientVisit.objects.filter(patient=patient, tenant=patient.tenant).order_by('-checkin_time', '-id')
         prescriptions = patient.prescriptions.select_related('prescribed_by', 'dispensed_by', 'visit').order_by('-prescribed_date')
         vitals = patient.vital_signs.select_related('recorded_by', 'visit').order_by('-recorded_at')
+        consultations = patient.consultation_notes.select_related('doctor', 'visit').order_by('-created_at')
+        dispenses = patient.dispenses.select_related('drug', 'dispensed_by', 'prescription', 'prescription__prescribed_by').order_by('-dispensed_date')
         invoices = patient.invoices.prefetch_related('items', 'payments').order_by('-invoice_date')
 
         return Response({
             'patient': self.get_serializer(patient).data,
             'visits': PatientVisitSerializer(visits, many=True).data,
+            'consultations': ConsultationNoteSerializer(consultations, many=True).data,
             'prescriptions': PrescriptionSerializer(prescriptions, many=True).data,
             'vitals': VitalSignSerializer(vitals, many=True).data,
+            'dispenses': DispenseSerializer(dispenses, many=True).data,
             'invoices': InvoiceSerializer(invoices, many=True).data,
         })
 

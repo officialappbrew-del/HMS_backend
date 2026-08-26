@@ -395,7 +395,7 @@ class InvoiceViewSet(TenantScopedModelViewSet):
     permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
-        qs = super().get_queryset().select_related('patient', 'visit').prefetch_related('items', 'payments', 'claims')
+        qs = super().get_queryset().select_related('patient', 'visit').prefetch_related('items', 'payments', 'insurance_claims')
         patient_id = self.request.query_params.get('patient_id')
         status_filter = self.request.query_params.get('status')
         start_date = self.request.query_params.get('start_date')
@@ -624,11 +624,11 @@ class FinancialAnalyticsView(APIView):
 
         # Revenue from invoices
         invoices = Invoice.objects.filter(tenant=tenant, invoice_date__gte=start_date)
-        total_revenue = invoices.aggregate(total=Sum('total_amount'))['total'] or 0
-        total_paid = invoices.aggregate(total=Sum('amount_paid'))['total'] or 0
-        total_pending = invoices.filter(status__in=['issued', 'partially_paid']).aggregate(
+        total_revenue = float(invoices.aggregate(total=Sum('total_amount'))['total'] or 0)
+        total_paid = float(invoices.aggregate(total=Sum('amount_paid'))['total'] or 0)
+        total_pending = float(invoices.filter(status__in=['issued', 'partially_paid']).aggregate(
             total=Sum('balance_due')
-        )['total'] or 0
+        )['total'] or 0)
 
         # Revenue breakdown by payment method from pharmacy sales
         sales = Sale.objects.filter(tenant=tenant, sold_at__gte=start_date, status='completed')
@@ -648,9 +648,9 @@ class FinancialAnalyticsView(APIView):
         }
 
         # Cost breakdown
-        # Staff costs - from payroll if available, otherwise estimate from active staff
-        from staff.models import Staff
-        active_staff_count = Staff.objects.filter(tenant=tenant, is_active=True).count()
+        # Staff costs - use tenant users because this project has no staff app.
+        from tenants.models import TenantUser
+        active_staff_count = TenantUser.objects.filter(tenant=tenant, is_active=True).count()
         avg_salary = 250000  # Average monthly salary in Naira
         staff_costs = active_staff_count * avg_salary
 
@@ -658,16 +658,20 @@ class FinancialAnalyticsView(APIView):
         drug_sales = sales.aggregate(total=Sum('total_amount'))['total'] or 0
         drug_costs = float(drug_sales) * 0.6  # Estimate 60% of sales as cost
 
-        # Equipment costs - from equipment maintenance
-        from equipment.models import Equipment, MaintenanceRecord
-        equipment_maintenance = MaintenanceRecord.objects.filter(
-            tenant=tenant, date__gte=start_date
-        ).aggregate(total=Sum('cost'))['total'] or 0
+        # Equipment maintenance is unavailable when the optional equipment app is not installed.
+        equipment_maintenance = 0
+        try:
+            from equipment.models import MaintenanceRecord
+            equipment_maintenance = MaintenanceRecord.objects.filter(
+                tenant=tenant, date__gte=start_date
+            ).aggregate(total=Sum('cost'))['total'] or 0
+        except ModuleNotFoundError:
+            pass
         equipment_costs = float(equipment_maintenance)
 
         # Overhead costs - estimate from tenant settings
-        tenant_obj = tenant
-        overhead_costs = float(tenant_obj.email_service_cost_monthly or 0) + float(tenant_obj.sms_service_cost_monthly or 0)
+        plan = getattr(tenant, 'subscription_plan', None)
+        overhead_costs = float(getattr(plan, 'email_service_cost_monthly', 0) or 0) + float(getattr(plan, 'sms_service_cost_monthly', 0) or 0)
         overhead_costs = overhead_costs * 3  # Rough quarterly estimate
 
         # Maintenance costs

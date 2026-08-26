@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from django.utils import timezone
+from django.db import transaction
+from decimal import Decimal
 import re
 
 from .models import (
@@ -23,6 +25,7 @@ class PatientSerializer(serializers.ModelSerializer):
     login_id = serializers.CharField(required=False, allow_blank=True)
     preferred_language = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     tenant = serializers.PrimaryKeyRelatedField(read_only=True)
+    initial_charges = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
 
     class Meta:
         model = Patient
@@ -32,20 +35,75 @@ class PatientSerializer(serializers.ModelSerializer):
             'password': {'write_only': True}
         }
 
+    def validate_initial_charges(self, charges):
+        allowed_types = {'consultation', 'drug', 'service', 'test', 'procedure', 'admission', 'other'}
+        validated = []
+        for index, charge in enumerate(charges):
+            description = str(charge.get('description', '')).strip()
+            if not description:
+                raise serializers.ValidationError({index: ['Charge description is required.']})
+            try:
+                quantity = int(charge.get('quantity', 1))
+                unit_price = Decimal(str(charge.get('unit_price', 0)))
+            except (TypeError, ValueError, ArithmeticError):
+                raise serializers.ValidationError({index: ['Quantity and unit price must be valid numbers.']})
+            item_type = charge.get('item_type', 'service')
+            if item_type not in allowed_types or quantity <= 0 or unit_price < 0:
+                raise serializers.ValidationError({index: ['Charge type, quantity, and price are invalid.']})
+            validated.append({
+                'item_type': item_type,
+                'description': description,
+                'quantity': quantity,
+                'unit_price': unit_price,
+            })
+        return validated
+
     def create(self, validated_data):
+        initial_charges = validated_data.pop('initial_charges', [])
         password = validated_data.pop('password', None)
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             tenant_user = getattr(request.user, 'tenant_user', None)
             if tenant_user is not None:
                 validated_data['registered_by'] = tenant_user
-        patient = Patient.objects.create(**validated_data)
+        with transaction.atomic():
+            patient = Patient.objects.create(**validated_data)
+            if initial_charges:
+                from billing.models import Invoice, InvoiceItem
+
+                invoice = Invoice.objects.create(
+                    tenant=patient.tenant,
+                    patient=patient,
+                    due_date=timezone.now(),
+                    status='issued',
+                    created_by=str(request.user) if request and request.user.is_authenticated else '',
+                )
+                subtotal = Decimal('0')
+                for charge in initial_charges:
+                    quantity = int(charge.get('quantity', 1))
+                    unit_price = Decimal(str(charge.get('unit_price', 0)))
+                    line_total = unit_price * quantity
+                    InvoiceItem.objects.create(
+                        invoice=invoice,
+                        item_type=charge.get('item_type', 'service'),
+                        description=str(charge.get('description', '')).strip(),
+                        quantity=quantity,
+                        unit_price=unit_price,
+                        line_total=line_total,
+                    )
+                    subtotal += line_total
+                invoice.subtotal = subtotal
+                invoice.total_amount = subtotal
+                invoice.balance_due = subtotal
+                invoice.patient_amount = subtotal
+                invoice.save(update_fields=['subtotal', 'total_amount', 'balance_due', 'patient_amount', 'updated_at'])
         if password:
             patient.set_password(password)
             patient.save(update_fields=['password'])
         return patient
 
     def update(self, instance, validated_data):
+        validated_data.pop('initial_charges', None)
         password = validated_data.pop('password', None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
