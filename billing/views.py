@@ -8,7 +8,8 @@ from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.db import connection
-from django.db.models import Sum, Count, Q
+from django.db.models import Sum, Count, Q, F, DecimalField, ExpressionWrapper
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 from patients.models import Patient
 from rest_framework import permissions, viewsets, status
@@ -652,18 +653,19 @@ class FinancialAnalyticsView(APIView):
             'out_of_pocket': float(cash_revenue),
         }
 
-        # Cost breakdown
-        # Staff costs - use tenant users because this project has no staff app.
-        from tenants.models import TenantUser
-        active_staff_count = TenantUser.objects.filter(tenant=tenant, is_active=True).count()
-        avg_salary = 250000  # Average monthly salary in Naira
-        staff_costs = active_staff_count * avg_salary
+        # Costs are limited to amounts recorded in the system. Do not estimate
+        # salaries, overhead, or drug cost when the source records are absent.
+        drug_costs = SaleItem.objects.filter(
+            sale__in=sales
+        ).aggregate(
+            total=Sum(
+                ExpressionWrapper(
+                    F('quantity') * F('drug__unit_price'),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                )
+            )
+        )['total'] or 0
 
-        # Drug costs - from pharmacy sales
-        drug_sales = sales.aggregate(total=Sum('total_amount'))['total'] or 0
-        drug_costs = float(drug_sales) * 0.6  # Estimate 60% of sales as cost
-
-        # Equipment maintenance is unavailable when the optional equipment app is not installed.
         equipment_maintenance = 0
         try:
             from equipment.models import MaintenanceRecord
@@ -674,22 +676,34 @@ class FinancialAnalyticsView(APIView):
             pass
         equipment_costs = float(equipment_maintenance)
 
-        # Overhead costs - estimate from tenant settings
-        plan = getattr(tenant, 'subscription_plan', None)
-        overhead_costs = float(getattr(plan, 'email_service_cost_monthly', 0) or 0) + float(getattr(plan, 'sms_service_cost_monthly', 0) or 0)
-        overhead_costs = overhead_costs * 3  # Rough quarterly estimate
-
-        # Maintenance costs
-        maintenance_costs = float(equipment_maintenance) * 0.5
-
         cost_breakdown = {
-            'staff': staff_costs,
-            'drugs': drug_costs,
-            'equipment': equipment_costs,
-            'overhead': overhead_costs,
-            'maintenance': maintenance_costs,
+            'drugs': float(drug_costs),
+            'equipment_maintenance': float(equipment_costs),
         }
         total_costs = sum(cost_breakdown.values())
+
+        # Pharmacy inventory and sales health indicators.
+        from pharmacy.models import Drug
+        inventory = Drug.objects.filter(tenant=tenant, status='active')
+        inventory_summary = inventory.aggregate(
+            drug_count=Count('id'),
+            units_in_stock=Sum('stock_quantity'),
+            stock_value=Sum(
+                ExpressionWrapper(
+                    F('stock_quantity') * F('unit_price'),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                )
+            ),
+        )
+        low_stock_count = inventory.filter(stock_quantity__lte=F('reorder_level')).count()
+        units_sold = SaleItem.objects.filter(sale__in=sales).aggregate(total=Sum('quantity'))['total'] or 0
+        sales_by_day = sales.annotate(day=TruncDate('sold_at')).values('day').annotate(
+            amount=Sum('total_amount'), count=Count('id')
+        ).order_by('day')
+        sales_trend = [
+            {'date': item['day'].isoformat(), 'amount': float(item['amount'] or 0), 'count': item['count']}
+            for item in sales_by_day
+        ]
 
         # Budgets
         budgets = Budget.objects.filter(tenant=tenant, year=now.year)
@@ -706,33 +720,11 @@ class FinancialAnalyticsView(APIView):
                 'variance': budget.variance,
             })
 
-        # KPIs
-        total_beds = 50  # Placeholder - should come from bed allocation
-        bed_occupancy = 87  # Placeholder - should be computed from admissions
-        avg_length_of_stay = 4.2  # Placeholder
-        patient_satisfaction = 94  # Placeholder
-        readmission_rate = 3.1  # Placeholder
-
         kpis = {
-            'clinical': {
-                'bedOccupancyRate': bed_occupancy,
-                'averageLengthOfStay': avg_length_of_stay,
-                'patientSatisfaction': patient_satisfaction,
-                'readmissionRate': readmission_rate,
-            },
             'financial': {
-                'revenuePerBed': total_revenue / total_beds if total_beds > 0 else 0,
                 'costPerPatient': total_costs / max(invoices.count(), 1),
                 'operatingMargin': ((total_revenue - total_costs) / total_revenue * 100) if total_revenue > 0 else 0,
-                'roi': 24.3,  # Placeholder
-                'debtToEquityRatio': 0.3,  # Placeholder
             },
-            'operational': {
-                'averageWaitTime': 23,  # Placeholder
-                'staffProductivity': 92,  # Placeholder
-                'equipmentUtilization': 78,  # Placeholder
-                'errorRate': 0.8,  # Placeholder
-            }
         }
 
         # Cash flow
@@ -757,6 +749,15 @@ class FinancialAnalyticsView(APIView):
             'budgets': budget_data,
             'kpis': kpis,
             'cashFlow': cash_flow,
+            'pharmacy': {
+                'drugCount': inventory_summary['drug_count'] or 0,
+                'unitsInStock': inventory_summary['units_in_stock'] or 0,
+                'stockValue': float(inventory_summary['stock_value'] or 0),
+                'lowStockCount': low_stock_count,
+                'unitsSold': units_sold,
+                'salesRevenue': float(sales.aggregate(total=Sum('total_amount'))['total'] or 0),
+                'salesTrend': sales_trend,
+            },
             'invoices': {
                 'total': invoices.count(),
                 'paid': invoices.filter(status='paid').count(),
