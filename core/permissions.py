@@ -127,11 +127,11 @@ class IsDoctorOrNurse(permissions.BasePermission):
 
 
 class IsLabTechnician(permissions.BasePermission):
-    """Check if user is a lab technician."""
-    
+    """Check if user is a lab technician or lab manager."""
+
     def has_permission(self, request, view):
         role = _get_user_role(getattr(request, 'user', None))
-        return bool(request.user.is_authenticated and role == 'lab_tech')
+        return bool(request.user.is_authenticated and role in {'lab_tech', 'lab_manager'})
 
 
 class IsReceptionist(permissions.BasePermission):
@@ -161,7 +161,7 @@ class IsClinicalStaff(permissions.BasePermission):
         role = _get_user_role(getattr(request, 'user', None))
         return bool(
             request.user.is_authenticated and role in {
-                'doctor', 'nurse', 'pharmacist', 'lab_tech', 'admin', 'tenant_admin', 'super_admin', 'system_admin'
+                'doctor', 'nurse', 'pharmacist', 'lab_tech', 'lab_manager', 'admin', 'tenant_admin', 'super_admin', 'system_admin'
             }
         )
 

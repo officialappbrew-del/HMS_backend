@@ -9,11 +9,12 @@ from .models import LabTest, LabOrder, LabResult, NCDCReport, InstrumentMaintena
 class LabTestSerializer(serializers.ModelSerializer):
     class Meta:
         model = LabTest
-        fields = '__all__'
+        exclude = ['tenant']
 
 
 class LabOrderSerializer(serializers.ModelSerializer):
     tenant = serializers.PrimaryKeyRelatedField(read_only=True)
+    order_number = serializers.CharField(required=False, allow_blank=True)
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
     test_name = serializers.CharField(source='test.name', read_only=True)
     ordered_by_name = serializers.CharField(source='ordered_by.get_full_name', read_only=True)

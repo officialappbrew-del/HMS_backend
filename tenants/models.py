@@ -364,6 +364,7 @@ class TenantUser(BaseModel):
         NURSE = 'nurse', _('Nurse')
         PHARMACIST = 'pharmacist', _('Pharmacist')
         LAB_TECH = 'lab_tech', _('Lab Technician')
+        LAB_MANAGER = 'lab_manager', _('Lab Manager')
         RECEPTIONIST = 'receptionist', _('Receptionist')
         ACCOUNTANT = 'accountant', _('Accountant')
         HR_MANAGER = 'hr_manager', _('HR Manager')

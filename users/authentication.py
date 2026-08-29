@@ -87,8 +87,12 @@ class RSAAuthentication(authentication.BaseAuthentication):
 
             return (user, None)
 
+        except jwt.ExpiredSignatureError:
+            raise AuthenticationFailed('Token expired')
         except jwt.InvalidTokenError:
             raise AuthenticationFailed('Invalid token')
+        except AuthenticationFailed:
+            raise
         # Do NOT leak internal exception details to the client. Log locally and
         # return a generic error.
         except Exception:
@@ -141,12 +145,12 @@ class JWTAuthentication(authentication.BaseAuthentication):
         auth_header = request.headers.get('Authorization')
 
         if not auth_header:
-            cookie_token = request.COOKIES.get('access_token')
+            cookies = getattr(request, 'COOKIES', {}) or {}
+            cookie_token = cookies.get('access_token')
             if cookie_token:
                 auth_header = f'Bearer {cookie_token}'
-
-        if not auth_header:
-            return None
+            else:
+                return None
 
         try:
             auth_type, token = auth_header.split(' ', 1)
@@ -235,7 +239,7 @@ class JWTAuthentication(authentication.BaseAuthentication):
                 user.tenant_domain = tenant.domain
 
                 user.is_staff = user.role in {
-                    'admin', 'doctor', 'nurse', 'pharmacist', 'lab_tech',
+                    'admin', 'doctor', 'nurse', 'pharmacist', 'lab_tech', 'lab_manager',
                     'receptionist', 'accountant', 'hr_manager',
                     'inventory_manager'
                 }
@@ -340,7 +344,8 @@ class CookieJWTAuthentication(authentication.BaseAuthentication):
         if request.path.startswith(public_auth_paths):
             return None
 
-        token = request.COOKIES.get(self.COOKIE_NAME)
+        cookies = getattr(request, 'COOKIES', {}) or {}
+        token = cookies.get(self.COOKIE_NAME)
         if not token:
             return None
 
@@ -399,7 +404,7 @@ class CookieJWTAuthentication(authentication.BaseAuthentication):
                 user.tenant_public_id = str(tenant.public_id) if tenant else None
                 user.tenant_domain = tenant.domain if tenant else None
                 user.is_staff = user.role in {
-                    'admin', 'doctor', 'nurse', 'pharmacist', 'lab_tech',
+                    'admin', 'doctor', 'nurse', 'pharmacist', 'lab_tech', 'lab_manager',
                     'receptionist', 'accountant', 'hr_manager',
                     'inventory_manager'
                 }

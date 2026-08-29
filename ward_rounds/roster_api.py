@@ -83,9 +83,14 @@ class DutyRosterViewSet(TenantScopedModelViewSet):
         tenant_user = getattr(user, 'tenant_user', None)
         if not tenant_user:
             return Response({'results': []})
+        try:
+            tenant = tenant_user.tenant
+        except Exception:
+            # Tenant relationship missing; return empty results
+            return Response({'results': []})
         assignments = DutyAssignment.objects.filter(
             staff_user=tenant_user,
-            roster__tenant=tenant_user.tenant,
+            roster__tenant=tenant,
         ).select_related('roster').order_by('-roster__year', '-roster__month', 'date')
         roster_map = {}
         for assignment in assignments:

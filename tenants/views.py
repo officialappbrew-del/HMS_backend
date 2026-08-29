@@ -1,7 +1,7 @@
 import csv
 import threading
 import logging
-from rest_framework import viewsets, status, permissions, mixins
+from rest_framework import viewsets, status, permissions, mixins, filters
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.response import Response
@@ -1290,8 +1290,10 @@ class TenantUserViewSet(viewsets.ModelViewSet):
     serializer_class = TenantUserSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
-    ordering = ['username', 'email']
-    ordering_fields = ['username', 'email', 'first_name', 'last_name', 'role']
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    ordering = ['first_name', 'last_name']
+    search_fields = ['first_name', 'last_name', 'email', 'employee_id', 'phone', 'role', 'department__name', 'username']
+    ordering_fields = ['first_name', 'last_name', 'email', 'role', 'employment_date', 'department', 'employment_status', 'username']
 
     def create(self, request, *args, **kwargs):
         temporary_password = request.data.get('password')
@@ -1371,21 +1373,22 @@ class TenantUserViewSet(viewsets.ModelViewSet):
                 qs = qs.exclude(created_by_invitation=True, is_active=False)
             elif self.action == 'list' and include_pending:
                 qs = qs.filter(created_by_invitation=True, is_active=False)
-            return qs
+        else:
+            tenant = None
+            if hasattr(user, 'tenant') and user.tenant:
+                tenant = user.tenant
+            elif hasattr(user, 'tenant_user') and user.tenant_user:
+                tenant = getattr(user.tenant_user, 'tenant', None)
+            elif getattr(user, 'tenant_public_id', None):
+                tenant = Tenant.objects.filter(public_id=user.tenant_public_id).first()
+            elif getattr(user, 'tenant_id', None):
+                tenant = Tenant.objects.filter(public_id=user.tenant_id).first()
+                if tenant is None and str(user.tenant_id).isdigit():
+                    tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
 
-        tenant = None
-        if hasattr(user, 'tenant') and user.tenant:
-            tenant = user.tenant
-        elif hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = getattr(user.tenant_user, 'tenant', None)
-        elif getattr(user, 'tenant_public_id', None):
-            tenant = Tenant.objects.filter(public_id=user.tenant_public_id).first()
-        elif getattr(user, 'tenant_id', None):
-            tenant = Tenant.objects.filter(public_id=user.tenant_id).first()
-            if tenant is None and str(user.tenant_id).isdigit():
-                tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
+            if not tenant:
+                return TenantUser.objects.none()
 
-        if tenant:
             qs = TenantUser.objects.filter(tenant=tenant)
             if self.action == 'list' and not include_pending:
                 qs = qs.exclude(created_by_invitation=True, is_active=False)
@@ -1395,19 +1398,15 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             if self.action == 'list' and not self._is_request_root_admin():
                 qs = qs.exclude(is_root_admin=True)
 
-            role_filter = self.request.query_params.get('role')
-            if role_filter:
-                return qs.filter(role=role_filter)
+        role_filter = self.request.query_params.get('role')
+        if role_filter:
+            qs = qs.filter(role=role_filter)
 
-            search = self.request.query_params.get('search')
-            if search:
-                return qs.filter(
-                    tenant=tenant,
-                )
+        status_filter = self.request.query_params.get('status')
+        if status_filter and status_filter != 'all':
+            qs = qs.filter(employment_status=status_filter)
 
-            return qs
-
-        return TenantUser.objects.none()
+        return qs
     
     def get_object(self):
         obj = super().get_object()
@@ -1664,17 +1663,24 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         
         if hasattr(user, 'tenant_user') and user.tenant_user:
-            tenant = user.tenant_user.tenant
+            try:
+                tenant = user.tenant_user.tenant
+            except Exception:
+                # Tenant relationship missing or invalid; return empty for non-admins
+                if not (user.is_superuser or user.role in ['super_admin', 'system_admin']):
+                    return Department.objects.none()
+                tenant = None
             
-            # Filter by clinical/non-clinical
-            is_clinical = self.request.query_params.get('is_clinical')
-            if is_clinical is not None:
-                return Department.objects.filter(
-                    tenant=tenant,
-                    is_clinical=is_clinical.lower() == 'true'
-                )
-            
-            return Department.objects.filter(tenant=tenant)
+            if tenant:
+                # Filter by clinical/non-clinical
+                is_clinical = self.request.query_params.get('is_clinical')
+                if is_clinical is not None:
+                    return Department.objects.filter(
+                        tenant=tenant,
+                        is_clinical=is_clinical.lower() == 'true'
+                    )
+                
+                return Department.objects.filter(tenant=tenant)
         
         # Global admin can see all departments
         if user.is_superuser or user.role in ['super_admin', 'system_admin']:
@@ -2158,6 +2164,8 @@ def _normalize_role(value):
         'pharmacist': 'pharmacist',
         'lab_tech': 'lab_tech',
         'lab technician': 'lab_tech',
+        'lab_manager': 'lab_manager',
+        'lab manager': 'lab_manager',
         'receptionist': 'receptionist',
         'reception': 'receptionist',
         'accountant': 'accountant',

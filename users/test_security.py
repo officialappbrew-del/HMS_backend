@@ -81,6 +81,42 @@ class JWTAuthenticationSecurityTests(TestCase):
             self.auth.authenticate(request)
         self.assertIn('expired', str(ctx.exception).lower())
 
+    def test_cookie_access_token_is_accepted_when_authorization_header_missing(self):
+        """Header-less requests should still authenticate from the access_token cookie."""
+        now = timezone.now()
+        payload = {
+            'user_id': 1,
+            'is_tenant_user': True,
+            'tenant_public_id': '00000000-0000-0000-0000-000000000001',
+            'tenant_id': 1,
+            'exp': int(now.timestamp()) + 300,
+            'token_version': 1,
+        }
+        token = jwt.encode(payload, 'test-signing-key-1234567890', algorithm='HS256')
+        request = mock.Mock()
+        request.headers = {}
+        request.META = {'REMOTE_ADDR': '127.0.0.1'}
+        request.COOKIES = {'access_token': token}
+
+        with mock.patch('users.authentication.Tenant.objects.filter') as tenant_filter, \
+             mock.patch('users.authentication.TenantUser.objects.filter') as tenant_user_filter:
+            tenant = mock.Mock(public_id='00000000-0000-0000-0000-000000000001', domain='tenant.local')
+            tenant_filter.return_value.first.return_value = tenant
+            tenant_user = mock.Mock(
+                id=1,
+                is_active=True,
+                is_authenticated=False,
+                is_tenant_user=False,
+                role='lab_manager',
+                token_version=1,
+                global_user=None,
+            )
+            tenant_user_filter.return_value.first.return_value = tenant_user
+
+            user, payload_out = self.auth.authenticate(request)
+            self.assertIs(user, tenant_user)
+            self.assertEqual(payload_out['tenant_public_id'], payload['tenant_public_id'])
+
     def test_internal_error_does_not_leak_details(self):
         """An unexpected internal error must be converted to a generic
         AuthenticationFailed and must NOT leak the internal message."""
@@ -174,6 +210,21 @@ class RSAValidationTests(TestCase):
         with self.assertRaises(AuthenticationFailed) as ctx:
             auth.authenticate(req)
         self.assertIn('expired', str(ctx.exception).lower())
+
+    def test_expired_rsa_token_keeps_expired_message(self):
+        """Expired RSA tokens should keep their explicit expired-token message."""
+        from .authentication import RSAAuthentication
+        from rest_framework.exceptions import AuthenticationFailed
+
+        auth = RSAAuthentication()
+        req = mock.Mock()
+        req.headers = {'Authorization': 'rsa invalid-token'}
+        req.META = {'REMOTE_ADDR': '127.0.0.1'}
+
+        with mock.patch('users.authentication.jwt.decode', side_effect=jwt.ExpiredSignatureError('expired')):
+            with self.assertRaises(AuthenticationFailed) as ctx:
+                auth.authenticate(req)
+            self.assertIn('expired', str(ctx.exception).lower())
 
     def test_internal_error_does_not_leak_details(self):
         """Unexpected errors in RSA auth must return a generic message."""

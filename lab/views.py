@@ -1,5 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
@@ -64,17 +65,19 @@ class LabOrderViewSet(TenantScopedModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
+        tenant = self.get_tenant()
+        if not tenant:
+            raise PermissionDenied('Tenant context required.')
+
         ordered_by = getattr(user, 'tenant_user', None) if hasattr(user, 'tenant_user') else None
-        if ordered_by:
-            serializer.save(ordered_by=ordered_by)
-        else:
-            serializer.save()
+        serializer.save(tenant=tenant, ordered_by=ordered_by)
 
     @action(detail=True, methods=['post'])
     def collect_sample(self, request, pk=None):
         order = self.get_object()
+        tenant_user = getattr(request.user, 'tenant_user', None)
         order.status = 'collected'
-        order.collected_by = request.user
+        order.collected_by = tenant_user or getattr(request.user, 'tenant_user', None)
         order.collected_date = timezone.now()
         if not order.sample_accession_number:
             order.sample_accession_number = f"ACC-{timezone.now().strftime('%Y%m%d')}-{str(order.id).zfill(6)}"
@@ -85,8 +88,11 @@ class LabOrderViewSet(TenantScopedModelViewSet):
     @action(detail=True, methods=['post'])
     def start_analysis(self, request, pk=None):
         order = self.get_object()
+        tenant_user = getattr(request.user, 'tenant_user', None)
         order.status = 'in_progress'
-        order.performed_by = request.user
+        order.performed_by = tenant_user or getattr(request.user, 'tenant_user', None)
+        if not order.collected_by:
+            order.collected_by = tenant_user or getattr(request.user, 'tenant_user', None)
         order.save()
         serializer = self.get_serializer(order)
         return Response(serializer.data)
