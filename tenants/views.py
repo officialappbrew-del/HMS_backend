@@ -23,7 +23,7 @@ from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup, BulkTenantUserUpload,
-    CommunicationProfile, SupportTicket, TenantDomain,
+    CommunicationProfile, ExternalServiceProfile, SupportTicket, TenantDomain,
     SubscriptionPayment
 )
 from .serializers import (
@@ -31,7 +31,7 @@ from .serializers import (
     DepartmentSerializer, TenantSettingSerializer, TenantModuleSerializer,
     TenantInvitationSerializer, AcceptInvitationSerializer,
     TenantActivityLogSerializer, TenantBackupSerializer, TenantSummarySerializer,
-    BulkTenantUserUploadSerializer, CommunicationProfileSerializer,
+    BulkTenantUserUploadSerializer, CommunicationProfileSerializer, ExternalServiceProfileSerializer,
     _check_employee_id_globally_unique, SelfSignupSerializer,
 )
 from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
@@ -2383,6 +2383,39 @@ class CommunicationProfileViewSet(viewsets.ModelViewSet):
                 tenant = Tenant.objects.filter(id=int(user.tenant_id)).first()
             return tenant
         return None
+
+
+class ExternalServiceProfileViewSet(viewsets.ModelViewSet):
+    """Tenant root-admin configuration for LIS, PACS, FHIR, and Mirth."""
+    serializer_class = ExternalServiceProfileSerializer
+    permission_classes = [IsTenantRootAdminOrGlobalAdmin]
+
+    def get_queryset(self):
+        tenant = self._resolve_tenant()
+        return ExternalServiceProfile.objects.filter(tenant=tenant) if tenant else ExternalServiceProfile.objects.none()
+
+    def _resolve_tenant(self):
+        user = self.request.user
+        tenant_user = getattr(user, 'tenant_user', None)
+        if tenant_user:
+            return tenant_user.tenant
+        if getattr(user, 'tenant', None):
+            return user.tenant
+        tenant_id = self.request.query_params.get('tenant_id')
+        return Tenant.objects.filter(public_id=tenant_id).first() if tenant_id else None
+
+    @action(detail=False, methods=['get', 'put', 'patch'], url_path='current')
+    def current(self, request):
+        tenant = self._resolve_tenant()
+        if not tenant:
+            return Response({'detail': 'Tenant not resolved.'}, status=status.HTTP_400_BAD_REQUEST)
+        profile, _ = ExternalServiceProfile.objects.get_or_create(tenant=tenant)
+        if request.method == 'GET':
+            return Response(self.get_serializer(profile).data)
+        serializer = self.get_serializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class TenantSupportTicketViewSet(viewsets.ModelViewSet):

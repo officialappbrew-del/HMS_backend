@@ -17,17 +17,18 @@ from django.utils.text import slugify
 from .models import (
     Patient, PatientVisit, PatientDocument,
     PatientAllergy, PatientMedication, Appointment,
-    BulkPatientUpload
+    BulkPatientUpload, PatientMerge
 )
 from .serializers import (
     PatientSerializer, PatientVisitSerializer, PatientDocumentSerializer,
     PatientAllergySerializer, PatientMedicationSerializer, AppointmentSerializer,
     PatientSearchSerializer, AppointmentScheduleSerializer, PatientLoginSerializer,
-    BulkPatientUploadSerializer
+    BulkPatientUploadSerializer, PatientMergeSerializer
 )
 from tenants.models import TenantUser
 from core.views import TenantScopedModelViewSet
 from core.models import AuditLog
+from .services import merge_patients, unmerge_patient
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,15 @@ class PatientViewSet(TenantScopedModelViewSet):
     serializer_class = PatientSerializer
     pagination_class = StandardPagination
     permission_classes = [permissions.IsAuthenticated]
+
+    def _can_manage_mpi(self):
+        user = self.request.user
+        role = getattr(getattr(user, 'tenant_user', None), 'role', None) or getattr(user, 'role', None)
+        return bool(
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'is_staff', False)
+            or role in {'admin', 'tenant_admin', 'super_admin', 'system_admin'}
+        )
     
     def _get_patient_from_request(self):
         user = getattr(self.request, 'user', None)
@@ -344,18 +354,77 @@ class PatientViewSet(TenantScopedModelViewSet):
 
     @action(detail=True, methods=['post'])
     def merge(self, request, pk=None):
-        """Merge incoming reception data into an existing patient record."""
-        duplicate = self.get_object()
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        """Merge this duplicate into the selected canonical survivor record."""
+        if not self._can_manage_mpi():
+            return Response({'detail': 'Only administrators can merge patient records.'}, status=status.HTTP_403_FORBIDDEN)
+        source = self.get_object()
+        survivor_id = request.data.get('survivor_id')
+        if not survivor_id:
+            return Response({'survivor_id': 'This field is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            merge_record = merge_patients(source.pk, int(survivor_id), self.get_tenant(), request.user, request.data.get('reason', ''))
+        except (Patient.DoesNotExist, ValueError):
+            return Response({'detail': 'Both patient records must belong to this tenant.'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as exc:
+            if hasattr(exc, 'detail'):
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            raise
+        self._write_audit_log('merge_patient', source.pk, new_values={
+            'survivor_patient_id': merge_record.survivor_patient_id,
+            'merge_record_id': merge_record.pk,
+            'reason': merge_record.reason,
+        })
+        return Response(PatientMergeSerializer(merge_record, context=self.get_serializer_context()).data, status=status.HTTP_200_OK)
 
-        for field in ['first_name', 'last_name', 'phone', 'email', 'address', 'city', 'state', 'lga', 'country', 'blood_group', 'marital_status', 'religion', 'ethnicity', 'preferred_language', 'occupation', 'next_of_kin_name', 'next_of_kin_relationship', 'next_of_kin_phone', 'next_of_kin_address', 'nin', 'patient_status', 'is_active', 'genotype', 'has_insurance', 'insurance_company', 'insurance_policy_number', 'nhis_number', 'known_allergies', 'chronic_conditions', 'current_medications', 'surgical_history', 'family_history', 'notes']:
-            value = serializer.validated_data.get(field)
-            if value not in (None, ''):
-                setattr(duplicate, field, value)
+    @action(detail=True, methods=['post'], url_path='unmerge')
+    def unmerge(self, request, pk=None):
+        """Reverse the active merge originating from this patient."""
+        if not self._can_manage_mpi():
+            return Response({'detail': 'Only administrators can unmerge patient records.'}, status=status.HTTP_403_FORBIDDEN)
+        source = self.get_object()
+        merge_record = PatientMerge.objects.filter(
+            source_patient=source, tenant=self.get_tenant(), status='active'
+        ).first()
+        if merge_record is None:
+            return Response({'detail': 'No active merge exists for this patient.'}, status=status.HTTP_404_NOT_FOUND)
+        merge_record = unmerge_patient(merge_record, request.user)
+        self._write_audit_log('unmerge_patient', source.pk, new_values={'merge_record_id': merge_record.pk})
+        return Response(PatientMergeSerializer(merge_record, context=self.get_serializer_context()).data)
 
-        duplicate.save()
-        return Response(PatientSerializer(duplicate, context=self.get_serializer_context()).data)
+    @action(detail=False, methods=['get'])
+    def mpi(self, request):
+        """Search the Master Patient Index, including inactive merged charts."""
+        if not self._can_manage_mpi():
+            return Response({'detail': 'Only administrators can access the Master Patient Index.'}, status=status.HTTP_403_FORBIDDEN)
+        query = request.query_params.get('search', '').strip()
+        queryset = Patient.objects.filter(tenant=self.get_tenant()).select_related('merged_into')
+        if query:
+            queryset = queryset.filter(
+                Q(hospital_number__icontains=query) | Q(mrn__icontains=query) |
+                Q(first_name__icontains=query) | Q(last_name__icontains=query) |
+                Q(middle_name__icontains=query) | Q(phone__icontains=query) |
+                Q(nin__icontains=query) | Q(nhis_number__icontains=query) |
+                Q(email__icontains=query)
+            )
+        queryset = queryset.order_by('-is_active', '-registration_date')[:100]
+        return Response({
+            'results': [
+                {
+                    **PatientSerializer(patient, context=self.get_serializer_context()).data,
+                    'is_merged': bool(patient.merged_into_id),
+                    'survivor_id': patient.merged_into_id,
+                }
+                for patient in queryset
+            ],
+            'count': queryset.count(),
+        })
+
+    @action(detail=False, methods=['get'], url_path='merge-history')
+    def merge_history(self, request):
+        if not self._can_manage_mpi():
+            return Response({'detail': 'Only administrators can access merge history.'}, status=status.HTTP_403_FORBIDDEN)
+        records = PatientMerge.objects.filter(tenant=self.get_tenant()).select_related('source_patient', 'survivor_patient', 'merged_by')
+        return Response(PatientMergeSerializer(records, many=True, context=self.get_serializer_context()).data)
 
     # ===== Audit logging =====
     def _get_client_ip(self):

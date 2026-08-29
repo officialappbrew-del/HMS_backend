@@ -189,6 +189,7 @@ INSTALLED_APPS = [
     'ward_rounds',
     'ndpr',
     'integration',
+    'ipd',
     'superadmin',
     ]
 
@@ -207,9 +208,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'django_tenants.middleware.main.TenantMainMiddleware',  # Add this last
-    'tenants.middleware.HeaderTenantMiddleware',  # Custom middleware for header-based tenant resolution
-    
+    'tenants.middleware.HeaderTenantMiddleware',  # Must run before default tenant middleware so X-Tenant-ID is honored
+    'django_tenants.middleware.main.TenantMainMiddleware',
+
     # Logging middleware
     'smartcare_hms.logging_middleware.CorrelationIdMiddleware',
     'smartcare_hms.logging_middleware.EnrichLoggingContextMiddleware',
@@ -609,26 +610,6 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-
-MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
-    'smartcare_hms.admin_security.AdminIPRestrictMiddleware',
-    'smartcare_hms.throttling.RateLimitMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'django_tenants.middleware.main.TenantMainMiddleware',
-    'tenants.middleware.HeaderTenantMiddleware',
-    'csp.middleware.CSPMiddleware',
-    'smartcare_hms.logging_middleware.CorrelationIdMiddleware',
-    'smartcare_hms.logging_middleware.EnrichLoggingContextMiddleware',
-    'smartcare_hms.logging_middleware.RequestResponseLoggingMiddleware',
-]
 
 CSP_DEFAULT_SRC = ["'self'"]
 CSP_SCRIPT_SRC = ["'self'", "'unsafe-inline'"]

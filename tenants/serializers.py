@@ -14,7 +14,7 @@ from .models import (
     Tenant, SubscriptionPlan, TenantUser, Department,
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup, BulkTenantUserUpload,
-    CommunicationProfile, SubscriptionExpiryNotification
+    CommunicationProfile, ExternalServiceProfile, SubscriptionExpiryNotification
 )
 from core.models import State, LGA, FacilityType, Specialization
 from core.serializers import StateSerializer, LGASerializer, FacilityTypeSerializer
@@ -740,6 +740,28 @@ class CommunicationProfileSerializer(serializers.ModelSerializer):
         model = CommunicationProfile
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at', 'tenant']
+
+
+class ExternalServiceProfileSerializer(serializers.ModelSerializer):
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+    mirth_api_key_configured = serializers.SerializerMethodField()
+    lis_api_key_configured = serializers.SerializerMethodField()
+    pacs_api_key_configured = serializers.SerializerMethodField()
+    fhir_api_key_configured = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExternalServiceProfile
+        fields = '__all__'
+        extra_kwargs = {field: {'write_only': True, 'required': False} for field in ExternalServiceProfile.SECRET_FIELDS}
+        read_only_fields = ['created_at', 'updated_at', 'tenant', 'mirth_api_key_configured', 'lis_api_key_configured', 'pacs_api_key_configured', 'fhir_api_key_configured']
+
+    def _configured(self, field):
+        return bool(getattr(self.instance, field, '') if self.instance else False)
+
+    def get_mirth_api_key_configured(self, obj): return self._configured('mirth_api_key')
+    def get_lis_api_key_configured(self, obj): return self._configured('lis_api_key')
+    def get_pacs_api_key_configured(self, obj): return self._configured('pacs_api_key')
+    def get_fhir_api_key_configured(self, obj): return self._configured('fhir_api_key')
 
 
 class SubscriptionExpiryNotificationSerializer(serializers.ModelSerializer):

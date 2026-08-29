@@ -83,21 +83,25 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
 
         if is_public:
             connection.set_schema_to_public()
+            request.tenant = None
             return
 
         # Priority: authenticated user > JWT token > X-Tenant-ID header > domain
         tenant = self._resolve_tenant_from_user(request)
         if tenant:
+            request.tenant = tenant
             connection.set_tenant(tenant)
             return
 
         tenant = self._resolve_tenant_from_jwt(request)
         if tenant:
+            request.tenant = tenant
             connection.set_tenant(tenant)
             return
 
         tenant = self._resolve_tenant_from_header(request)
         if tenant:
+            request.tenant = tenant
             connection.set_tenant(tenant)
             return
 

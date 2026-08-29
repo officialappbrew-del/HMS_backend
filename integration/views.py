@@ -1,6 +1,7 @@
 import uuid
 
 from django.shortcuts import get_object_or_404
+from django.db import models
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,7 +9,7 @@ from rest_framework.viewsets import ViewSet
 
 from lab.models import LabResult
 from patients.models import Patient
-from .models import IntegrationClient, IntegrationMessage
+from .models import IntegrationClient, IntegrationMessage, MirthChannel
 from .services import FHIRService, HL7Service
 
 
@@ -31,6 +32,11 @@ class IntegrationAPIKeyAuthentication(permissions.BasePermission):
         for candidate in IntegrationClient.objects.filter(is_active=True):
             if candidate.api_key_prefix and token.startswith(candidate.api_key_prefix):
                 if candidate.verify_api_key(token):
+                    allowed_ips = candidate.allowed_ip_addresses or []
+                    if allowed_ips and request.META.get('REMOTE_ADDR') not in allowed_ips:
+                        continue
+                    candidate.last_used = timezone.now()
+                    candidate.save(update_fields=['last_used', 'updated_at'])
                     request.integration_client = candidate
                     return True
 
@@ -150,6 +156,18 @@ class IntegrationClientCreateAPIView(APIView):
     """Create a new external integration client with a generated API key."""
     permission_classes = [permissions.IsAuthenticated]
 
+    def get(self, request, *args, **kwargs):
+        if not _staff_user(request):
+            return Response({'detail': 'Administrator permission required.'}, status=status.HTTP_403_FORBIDDEN)
+        tenant = getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        clients = IntegrationClient.objects.filter(tenant=tenant, is_active=True).order_by('name')
+        return Response([{
+            'id': client.id,
+            'name': client.name,
+            'description': client.description,
+            'api_key_prefix': client.api_key_prefix,
+        } for client in clients])
+
     def post(self, request, *args, **kwargs):
         name = request.data.get('name')
         description = request.data.get('description', '')
@@ -172,6 +190,102 @@ class IntegrationClientCreateAPIView(APIView):
             'api_key': raw_key,
             'authorization_header': f'Bearer {raw_key}',
         }, status=status.HTTP_201_CREATED)
+
+
+def _staff_user(request):
+    user = request.user
+    role = getattr(getattr(user, 'tenant_user', None), 'role', None) or getattr(user, 'role', None)
+    return bool(getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False) or role in {'admin', 'tenant_admin', 'super_admin', 'system_admin'})
+
+
+class MirthChannelListAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not _staff_user(request):
+            return Response({'detail': 'Administrator permission required.'}, status=status.HTTP_403_FORBIDDEN)
+        tenant = getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        channels = MirthChannel.objects.filter(tenant=tenant).select_related('client')
+        return Response([self._serialize(channel, request) for channel in channels])
+
+    def post(self, request):
+        if not _staff_user(request):
+            return Response({'detail': 'Administrator permission required.'}, status=status.HTTP_403_FORBIDDEN)
+        tenant = getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        if tenant is None:
+            return Response({'detail': 'Tenant context required.'}, status=status.HTTP_400_BAD_REQUEST)
+        required = ['name', 'source_system', 'client_id']
+        missing = [field for field in required if not request.data.get(field)]
+        if missing:
+            return Response({field: 'This field is required.' for field in missing}, status=status.HTTP_400_BAD_REQUEST)
+        client = get_object_or_404(IntegrationClient, pk=request.data['client_id'], tenant=tenant, is_active=True)
+        channel = MirthChannel.objects.create(
+            tenant=tenant, client=client, name=request.data['name'].strip(),
+            source_system=request.data['source_system'].strip(), protocol=request.data.get('protocol', 'hl7'),
+            direction=request.data.get('direction', 'inbound'), mirth_base_url=request.data.get('mirth_base_url', '').strip(),
+            channel_id=request.data.get('channel_id', '').strip(), settings=request.data.get('settings') or {},
+        )
+        return Response(self._serialize(channel, request), status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _serialize(channel, request):
+        return {
+            'id': channel.id, 'name': channel.name, 'source_system': channel.source_system,
+            'protocol': channel.protocol, 'direction': channel.direction, 'status': channel.status,
+            'mirth_base_url': channel.mirth_base_url, 'channel_id': channel.channel_id,
+            'client_id': channel.client_id, 'client_name': channel.client.name,
+            'inbound_url': request.build_absolute_uri('/api/v1/integration/mirth/inbound/'),
+            'last_health_check': channel.last_health_check, 'last_message_at': channel.last_message_at,
+            'error_count': channel.error_count,
+        }
+
+
+class MirthChannelHealthAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if not _staff_user(request):
+            return Response({'detail': 'Administrator permission required.'}, status=status.HTTP_403_FORBIDDEN)
+        tenant = getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        channel = get_object_or_404(MirthChannel, pk=pk, tenant=tenant)
+        channel.last_health_check = timezone.now()
+        channel.save(update_fields=['last_health_check', 'updated_at'])
+        return Response({'healthy': True, 'detail': 'HMS inbound endpoint is available.', 'channel_id': channel.id})
+
+
+class MirthInboundAPIView(APIView):
+    """Receive one FHIR Observation transformed by a Mirth Connect channel."""
+    permission_classes = [IntegrationAPIKeyAuthentication]
+
+    def post(self, request):
+        payload = request.data if isinstance(request.data, dict) else None
+        if not payload or payload.get('resourceType') != 'Observation':
+            return Response({'accepted': False, 'detail': 'Send one normalized FHIR Observation from Mirth Connect.'}, status=status.HTTP_400_BAD_REQUEST)
+        client = request.integration_client
+        tenant = client.tenant
+        correlation_id = request.headers.get('X-Correlation-ID') or str(uuid.uuid4())
+        existing = IntegrationMessage.objects.filter(client=client, correlation_id=correlation_id).first()
+        if existing:
+            return Response({'accepted': existing.status == IntegrationMessage.Status.ACCEPTED, 'duplicate': True, 'correlation_id': correlation_id})
+        message = IntegrationMessage.objects.create(
+            source_system=client.name, destination_system='smartcare-hms', direction=IntegrationMessage.Direction.INBOUND,
+            message_type='lab-result', protocol='fhir', resource_type='Observation', status=IntegrationMessage.Status.QUEUED,
+            correlation_id=correlation_id, payload=payload, raw_payload=request.body.decode('utf-8', errors='replace'),
+            ip_address=request.META.get('REMOTE_ADDR'), tenant=tenant, client=client,
+        )
+        try:
+            ingestion = FHIRService.ingest_observation(payload, tenant=tenant)
+            message.status = IntegrationMessage.Status.ACCEPTED
+            message.payload = {**payload, 'ingestion': ingestion}
+            message.save(update_fields=['status', 'payload', 'updated_at'])
+            MirthChannel.objects.filter(client=client, tenant=tenant).update(last_message_at=timezone.now())
+            return Response({'accepted': True, 'correlation_id': correlation_id, 'ingestion': ingestion}, status=status.HTTP_202_ACCEPTED)
+        except Exception as exc:
+            message.status = IntegrationMessage.Status.REJECTED
+            message.payload = {'error': str(exc), 'resource': payload}
+            message.save(update_fields=['status', 'payload', 'updated_at'])
+            MirthChannel.objects.filter(client=client, tenant=tenant).update(error_count=models.F('error_count') + 1)
+            return Response({'accepted': False, 'correlation_id': correlation_id, 'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class IntegrationMessageListAPIView(APIView):

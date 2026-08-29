@@ -7,7 +7,7 @@ import re
 from .models import (
     Patient, PatientVisit, PatientDocument,
     PatientAllergy, PatientMedication, Appointment,
-    BulkPatientUpload
+    BulkPatientUpload, PatientMerge
 )
 
 
@@ -289,6 +289,19 @@ class PatientSearchSerializer(serializers.Serializer):
     last_name = serializers.CharField(required=False)
     phone = serializers.CharField(required=False)
     email = serializers.CharField(required=False)
+
+
+class PatientMergeSerializer(serializers.ModelSerializer):
+    source_patient = PatientSerializer(read_only=True)
+    survivor_patient = PatientSerializer(read_only=True)
+    moved_record_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PatientMerge
+        fields = '__all__'
+
+    def get_moved_record_count(self, obj):
+        return len(obj.moved_records or [])
 
 
 class AppointmentScheduleSerializer(serializers.Serializer):

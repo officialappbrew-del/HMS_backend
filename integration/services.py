@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from django.utils import timezone
+from django.db import transaction
 
 from lab.models import LabResult, LabOrder, LabTest
 from patients.models import Patient
@@ -64,6 +65,50 @@ class FHIRService:
             }] if result.reference_range else [],
             'issued': result.created_at.isoformat(),
         }
+
+    @staticmethod
+    @transaction.atomic
+    def ingest_observation(resource: Dict[str, Any], tenant=None) -> Dict[str, Any]:
+        """Persist a FHIR Observation already normalized by Mirth Connect."""
+        if resource.get('resourceType') != 'Observation':
+            raise ValueError('Mirth inbound payload must contain a FHIR Observation.')
+
+        subject = resource.get('subject') or {}
+        reference = str(subject.get('reference') or '')
+        patient_identifier = reference.split('/', 1)[1] if reference.startswith('Patient/') else ''
+        patient = HL7Service.find_patient_by_hl7_identifier(patient_identifier, tenant=tenant)
+        if patient is None:
+            raise ValueError('Observation patient was not found in this tenant.')
+
+        coding = (resource.get('code') or {}).get('coding') or [{}]
+        code = coding[0].get('code') or 'MIRTH-UNKNOWN'
+        name = coding[0].get('display') or (resource.get('code') or {}).get('text') or code
+        value = resource.get('valueQuantity') or {}
+        value_text = value.get('value', resource.get('valueString', ''))
+        lab_test, _ = LabTest.objects.get_or_create(
+            tenant=patient.tenant, code=code,
+            defaults={'name': name, 'category': 'other', 'sample_type': 'blood', 'turnaround_time': 24},
+        )
+        order = LabOrder.objects.filter(
+            tenant=patient.tenant, patient=patient, test=lab_test,
+        ).order_by('-ordered_date').first()
+        if order is None:
+            order = LabOrder.objects.create(
+                tenant=patient.tenant, patient=patient, test=lab_test,
+                order_number=f"MIRTH-{timezone.now().strftime('%Y%m%d%H%M%S%f')}",
+                status='completed',
+            )
+        result = LabResult.objects.create(
+            tenant=patient.tenant, order=order, value=str(value_text),
+            value_numeric=float(value_text) if HL7Service._is_numeric(value_text) else None,
+            units=value.get('unit', ''),
+            reference_range=(resource.get('referenceRange') or [{}])[0].get('text', ''),
+            is_critical=any('critical' in str(item).lower() for item in (resource.get('interpretation') or [])),
+            flag=(resource.get('interpretation') or [{}])[0].get('coding', [{}])[0].get('code', ''),
+            result_notes='Imported from Mirth Connect normalized FHIR',
+            is_verified=True,
+        )
+        return {'patient_id': patient.id, 'order_id': order.id, 'result_id': result.id, 'test_code': code}
 
 
 class HL7Service:

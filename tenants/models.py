@@ -919,6 +919,34 @@ class CommunicationProfile(BaseModel):
         verbose_name_plural = _('Communication Profiles')
 
 
+class ExternalServiceProfile(BaseModel):
+    """Tenant-scoped endpoints and encrypted credentials for connected systems."""
+    tenant = models.OneToOneField(Tenant, on_delete=models.CASCADE, related_name='external_service_profile')
+    mirth_endpoint = models.URLField(blank=True)
+    mirth_channel_id = models.CharField(max_length=120, blank=True)
+    mirth_api_key = models.CharField(max_length=255, blank=True)
+    lis_endpoint = models.URLField(blank=True)
+    lis_api_key = models.CharField(max_length=255, blank=True)
+    pacs_endpoint = models.URLField(blank=True)
+    pacs_api_key = models.CharField(max_length=255, blank=True)
+    fhir_endpoint = models.URLField(blank=True)
+    fhir_api_key = models.CharField(max_length=255, blank=True)
+
+    SECRET_FIELDS = ('mirth_api_key', 'lis_api_key', 'pacs_api_key', 'fhir_api_key')
+
+    def save(self, *args, **kwargs):
+        from .security import encrypt_value, is_encrypted
+        for field_name in self.SECRET_FIELDS:
+            value = getattr(self, field_name)
+            if value and not is_encrypted(value):
+                setattr(self, field_name, encrypt_value(value))
+        super().save(*args, **kwargs)
+
+    class Meta:
+        verbose_name = _('External Service Profile')
+        verbose_name_plural = _('External Service Profiles')
+
+
 class SupportTicket(BaseModel):
     """Support ticket for tenant technical issues."""
     class Priority(models.TextChoices):

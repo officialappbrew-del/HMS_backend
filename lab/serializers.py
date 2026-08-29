@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
@@ -129,9 +131,24 @@ class NCDCReportSubmitSerializer(serializers.Serializer):
 
 
 class InstrumentMaintenanceSerializer(serializers.ModelSerializer):
+    tenant = serializers.PrimaryKeyRelatedField(read_only=True)
+    scheduled_date = serializers.DateTimeField(required=True)
+    completed_date = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        for field_name in ('scheduled_date', 'completed_date'):
+            value = attrs.get(field_name)
+            if value is None or not isinstance(value, datetime):
+                continue
+            if timezone.is_naive(value):
+                attrs[field_name] = timezone.make_aware(value, timezone.get_current_timezone())
+        return attrs
+
     class Meta:
         model = InstrumentMaintenance
         fields = '__all__'
+        read_only_fields = ['tenant']
 
 
 class CriticalResultSerializer(serializers.Serializer):

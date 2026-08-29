@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
@@ -241,6 +243,15 @@ class InstrumentMaintenance(BaseModel):
     
     # Cost
     cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        for field_name in ('scheduled_date', 'completed_date'):
+            value = getattr(self, field_name, None)
+            if value is None or not isinstance(value, datetime):
+                continue
+            if timezone.is_naive(value):
+                setattr(self, field_name, timezone.make_aware(value, timezone.get_current_timezone()))
+        super().save(*args, **kwargs)
     
     def __str__(self):
         return f"{self.instrument_name} - {self.get_maintenance_type_display()}"

@@ -1,6 +1,10 @@
 from django.urls import path
 
-from .views import FHIRIntegrationViewSet, HL7IntegrationAPIView, IntegrationClientCreateAPIView, IntegrationMessageListAPIView
+from .views import (
+    FHIRIntegrationViewSet, HL7IntegrationAPIView, IntegrationClientCreateAPIView,
+    IntegrationMessageListAPIView, MirthChannelListAPIView,
+    MirthChannelHealthAPIView, MirthInboundAPIView,
+)
 
 fhir_view = FHIRIntegrationViewSet.as_view({
     'get': 'list',
@@ -14,6 +18,9 @@ fhir_patient_view = FHIRIntegrationViewSet.as_view({
 
 urlpatterns = [
     path('clients/', IntegrationClientCreateAPIView.as_view(), name='integration-client-create'),
+    path('mirth/channels/', MirthChannelListAPIView.as_view(), name='mirth-channels'),
+    path('mirth/channels/<int:pk>/health/', MirthChannelHealthAPIView.as_view(), name='mirth-channel-health'),
+    path('mirth/inbound/', MirthInboundAPIView.as_view(), name='mirth-inbound'),
     path('messages/', IntegrationMessageListAPIView.as_view(), name='integration-messages'),
     path('fhir/', fhir_view, name='fhir-integration'),
     path('fhir/metadata/', FHIRIntegrationViewSet.capability_statement, name='fhir-capability-statement'),

@@ -107,6 +107,18 @@ class Patient(BaseModel):
         ('deceased', 'Deceased'),
         ('transferred', 'Transferred')
     ], default='active')
+
+    # Master Patient Index lifecycle
+    merged_into = models.ForeignKey(
+        'self', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='merged_sources',
+    )
+    merged_at = models.DateTimeField(null=True, blank=True)
+    merged_by = models.ForeignKey(
+        'tenants.TenantUser', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='patient_merges',
+    )
+    merge_reason = models.TextField(blank=True)
     
     # Additional Information
     photo = models.ImageField(upload_to='patient_photos/', null=True, blank=True)
@@ -131,6 +143,7 @@ class Patient(BaseModel):
             models.Index(fields=['phone']),
             models.Index(fields=['nin']),
             models.Index(fields=['tenant', 'is_active', 'patient_status']),
+            models.Index(fields=['tenant', 'merged_into']),
         ]
     
     def save(self, *args, **kwargs):
@@ -252,6 +265,40 @@ class Patient(BaseModel):
             age_years -= 1
         
         return f"{age_years} years"
+
+
+class PatientMerge(BaseModel):
+    """Immutable-ish record of a patient merge and the rows moved by it."""
+
+    STATUS_CHOICES = [('active', 'Active'), ('unmerged', 'Unmerged')]
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='patient_merges')
+    source_patient = models.OneToOneField(
+        Patient, on_delete=models.PROTECT, related_name='merge_record',
+    )
+    survivor_patient = models.ForeignKey(
+        Patient, on_delete=models.PROTECT, related_name='surviving_merges',
+    )
+    merged_by = models.ForeignKey(
+        'tenants.TenantUser', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='created_patient_merge_records',
+    )
+    merged_at = models.DateTimeField(auto_now_add=True)
+    unmerged_at = models.DateTimeField(null=True, blank=True)
+    unmerged_by = models.ForeignKey(
+        'tenants.TenantUser', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='unmerged_patient_records',
+    )
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    moved_records = models.JSONField(default=list)
+
+    class Meta:
+        ordering = ['-merged_at']
+        indexes = [
+            models.Index(fields=['tenant', 'status']),
+            models.Index(fields=['survivor_patient', 'status']),
+        ]
 
 
 class PatientVisit(BaseModel):

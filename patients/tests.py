@@ -1,12 +1,15 @@
 from types import SimpleNamespace
+from datetime import date
 
 from django.test import TestCase
 from django.utils import timezone
+from django.core.files.base import ContentFile
 from rest_framework.test import APIRequestFactory
 
 from core.models import AuditLog, Country, FacilityType, LGA, State
 from tenants.models import SubscriptionPlan, Tenant
-from .models import Patient
+from .models import Patient, PatientDocument, PatientMerge
+from .services import merge_patients, unmerge_patient
 from .serializers import PatientLoginSerializer, PatientSerializer
 from .views import PatientViewSet
 
@@ -43,6 +46,60 @@ class PatientReceptionWorkflowTests(TestCase):
 
         self.assertEqual(field.max_length, 100)
         self.assertEqual(field.get_default(), 'English')
+
+
+class PatientMPITests(TestCase):
+    def setUp(self):
+        country = Country.objects.create(name='Nigeria', code='NG')
+        state = State.objects.create(name='Lagos', code='LA', country=country)
+        lga = LGA.objects.create(name='Ikeja', state=state)
+        facility_type = FacilityType.objects.create(name='Hospital', code='HOSP')
+        plan = SubscriptionPlan.objects.create(
+            name='MPI', code='MPI', price_monthly=0, price_quarterly=0,
+            price_yearly=0, currency='NGN', max_users=10, max_patients=100,
+            max_storage_gb=5, trial_period_days=30,
+        )
+        self.tenant = Tenant.objects.create(
+            name='MPI Clinic', code='MPI', domain='mpiclinic.localhost',
+            schema_name='tenant_mpiclinic', email='mpi@example.com',
+            phone='08011111111', address='1 MPI Street', city='Lagos',
+            state=state, lga=lga, country=country, facility_type=facility_type,
+            registration_number='REGMPI123', subscription_plan=plan,
+        )
+        self.source = Patient.objects.create(
+            tenant=self.tenant, first_name='Jon', last_name='Doe',
+            date_of_birth=date(1990, 1, 1), gender='male', phone='08022222222',
+            email='jon@example.com', address='Lagos', state='Lagos', country='Nigeria',
+        )
+        self.survivor = Patient.objects.create(
+            tenant=self.tenant, first_name='John', last_name='Doe',
+            date_of_birth=date(1990, 1, 1), gender='male', phone='08033333333',
+            email='john@example.com', address='Lagos', state='Lagos', country='Nigeria',
+        )
+
+    def test_merge_moves_linked_records_and_unmerge_restores_them(self):
+        document = PatientDocument.objects.create(
+            tenant=self.tenant, patient=self.source, document_type='other',
+            title='Source chart note', file=ContentFile(b'source record', name='source.txt'),
+        )
+        merge_record = merge_patients(
+            self.source.id, self.survivor.id, self.tenant,
+            SimpleNamespace(), 'Duplicate registration with corrected spelling',
+        )
+
+        document.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(document.patient_id, self.survivor.id)
+        self.assertEqual(self.source.merged_into_id, self.survivor.id)
+        self.assertEqual(merge_record.status, 'active')
+        self.assertEqual(len(merge_record.moved_records), 1)
+
+        unmerge_patient(merge_record, SimpleNamespace())
+        document.refresh_from_db()
+        self.source.refresh_from_db()
+        self.assertEqual(document.patient_id, self.source.id)
+        self.assertIsNone(self.source.merged_into_id)
+        self.assertEqual(PatientMerge.objects.get(pk=merge_record.pk).status, 'unmerged')
 
 
 class PatientAuditTrailTests(TestCase):
