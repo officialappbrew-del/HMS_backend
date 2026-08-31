@@ -37,6 +37,8 @@ from .serializers import (
 class IsPatientBillingStaff(permissions.BasePermission):
     def has_permission(self, request, view):
         user = request.user
+        if getattr(user, 'is_patient', False):
+            return bool(user.is_authenticated)
         tenant_user = getattr(user, 'tenant_user', None)
         role = getattr(tenant_user, 'role', None) or getattr(user, 'role', None)
         return bool(user.is_authenticated and role in {
@@ -54,11 +56,18 @@ def record_patient_payment(request):
         or getattr(request, 'tenant', None)
         or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
     )
+    if getattr(request.user, 'is_patient', False):
+        patient_id = getattr(request.user, 'patient_id', None) or getattr(request.user, 'id', None)
+        tenant = Patient.objects.filter(id=patient_id).values_list('tenant', flat=True).first()
+        tenant = Tenant.objects.filter(id=tenant).first() if tenant else None
     invoice_id = request.data.get('invoice')
     if not tenant or not invoice_id:
         return Response({'detail': 'Tenant and invoice context are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
     invoice = Invoice.objects.filter(id=invoice_id, tenant=tenant).first()
+    if getattr(request.user, 'is_patient', False):
+        patient_id = getattr(request.user, 'patient_id', None) or getattr(request.user, 'id', None)
+        invoice = invoice if invoice and invoice.patient_id == patient_id else None
     if not invoice:
         return Response({'invoice': ['Invoice not found.']}, status=status.HTTP_404_NOT_FOUND)
     try:

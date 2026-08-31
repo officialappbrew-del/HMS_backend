@@ -619,10 +619,20 @@ class PatientViewSet(TenantScopedModelViewSet):
 
         from lab.models import LabOrder
         from lab.serializers import LabOrderSerializer
+        from clinical.models import Prescription
+        from clinical.serializers import PrescriptionSerializer
+        from billing.models import Invoice
+        from billing.serializers import InvoiceSerializer
 
         appointments = patient.appointments.all().order_by('-scheduled_date', '-scheduled_time')
         lab_orders = LabOrder.objects.filter(tenant=patient.tenant, patient=patient).select_related('test').prefetch_related('results').order_by('-ordered_date')
         documents = patient.documents.all().order_by('-upload_date')
+        prescriptions = Prescription.objects.filter(
+            tenant=patient.tenant, patient=patient
+        ).select_related('prescribed_by', 'dispensed_by', 'visit').order_by('-prescribed_date')
+        invoices = Invoice.objects.filter(
+            tenant=patient.tenant, patient=patient
+        ).prefetch_related('items', 'payments', 'insurance_claims').order_by('-invoice_date')
         tenant = patient.tenant
         tenant_logo_url = ''
         if tenant.logo:
@@ -648,6 +658,8 @@ class PatientViewSet(TenantScopedModelViewSet):
             'appointments': AppointmentSerializer(appointments, many=True).data,
             'lab_orders': LabOrderSerializer(lab_orders, many=True).data,
             'documents': PatientDocumentSerializer(documents, many=True).data,
+            'prescriptions': PrescriptionSerializer(prescriptions, many=True).data,
+            'invoices': InvoiceSerializer(invoices, many=True, context=self.get_serializer_context()).data,
             'notifications': [
                 {
                     'id': 'welcome',
