@@ -26,7 +26,7 @@ from .serializers import (
     PatientSearchSerializer, AppointmentScheduleSerializer, PatientLoginSerializer,
     BulkPatientUploadSerializer, PatientMergeSerializer
 )
-from tenants.models import TenantUser
+from tenants.models import TenantUser, Department
 from core.views import TenantScopedModelViewSet
 from core.models import AuditLog
 from .services import merge_patients, unmerge_patient
@@ -1087,12 +1087,60 @@ class AppointmentViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        request_data = request.data.copy()
+        request_user = request.user
+        is_patient = bool(getattr(request_user, 'is_patient', False))
+
+        if is_patient:
+            patient_id = getattr(request_user, 'patient_id', None) or getattr(request_user, 'id', None)
+            if not patient_id:
+                return Response({'detail': 'Patient identity could not be determined.'}, status=status.HTTP_401_UNAUTHORIZED)
+            request_data['patient'] = patient_id
+
+        # Portal forms may submit human-readable doctor or department names.
+        # Staff forms continue to submit primary-key values.
+        tenant = self.get_tenant()
+        doctor_value = request_data.get('doctor')
+        if doctor_value and not str(doctor_value).isdigit():
+            doctor = TenantUser.objects.filter(
+                tenant=tenant,
+                role='doctor',
+                is_active=True,
+            ).filter(
+                Q(email__iexact=str(doctor_value)) |
+                Q(employee_id__iexact=str(doctor_value)) |
+                Q(username__iexact=str(doctor_value))
+            ).first()
+            if doctor is None:
+                doctor_parts = str(doctor_value).split()
+                if len(doctor_parts) >= 2:
+                    doctor = TenantUser.objects.filter(
+                        tenant=tenant,
+                        role='doctor',
+                        is_active=True,
+                        first_name__iexact=doctor_parts[0],
+                        last_name__iexact=' '.join(doctor_parts[1:]),
+                    ).first()
+            if doctor:
+                request_data['doctor'] = doctor.id
+            else:
+                request_data['doctor'] = None
+
+        department_value = request_data.get('department')
+        if department_value and not str(department_value).isdigit():
+            department = Department.objects.filter(
+                tenant=tenant,
+                name__iexact=str(department_value),
+            ).first()
+            request_data['department'] = department.id if department else None
+
+        serializer = self.get_serializer(data=request_data)
         serializer.is_valid(raise_exception=True)
         # Use perform_create so TenantScopedModelViewSet injects the tenant
         self.perform_create(serializer)
         appointment = serializer.instance
 
+        reminder_result = {'status': 'skipped', 'channels': []}
         if request.data.get('send_reminder', False):
             reminder_result = _dispatch_appointment_reminder(
                 appointment,
@@ -1105,6 +1153,42 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         if request.data.get('send_reminder', False) and reminder_result.get('error'):
             response_data['notification_warning'] = reminder_result['error']
         return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def _notify_assigned_doctor(self, appointment):
+        doctor = appointment.doctor
+        if not doctor or not doctor.email:
+            return
+        try:
+            from tenants.communication import build_email_context, send_tenant_email
+            context = build_email_context(appointment.tenant, extra={
+                'app_name': getattr(settings, 'APP_NAME', 'SmartCare HMS'),
+                'doctor_name': doctor.get_full_name(),
+                'patient_name': appointment.patient.get_full_name(),
+                'appointment_date': appointment.scheduled_date,
+                'appointment_time': appointment.scheduled_time,
+                'appointment_type': appointment.get_appointment_type_display(),
+                'reason': appointment.reason,
+            })
+            send_tenant_email(
+                tenant=appointment.tenant,
+                subject=f'{appointment.tenant.name} - Appointment Assigned',
+                message=render_to_string('patients/appointment_assigned_email.txt', context),
+                recipient_list=[doctor.email],
+                html_message=render_to_string('patients/appointment_assigned_email.html', context),
+                fail_silently=True,
+                allow_global_fallback=False,
+            )
+        except Exception:
+            logger.exception('Failed to notify doctor %s for appointment %s', doctor.id, appointment.id)
+
+    def update(self, request, *args, **kwargs):
+        appointment = self.get_object()
+        previous_doctor_id = appointment.doctor_id
+        response = super().update(request, *args, **kwargs)
+        updated_appointment = self.get_object()
+        if not previous_doctor_id and updated_appointment.doctor_id:
+            self._notify_assigned_doctor(updated_appointment)
+        return response
     
     def get_queryset(self):
         queryset = super().get_queryset().select_related(
@@ -1128,9 +1212,13 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         if doctor_filter:
             queryset = queryset.filter(doctor_id=doctor_filter)
         else:
-            tenant_user = getattr(self.request.user, 'tenant_user', None)
-            if tenant_user and getattr(tenant_user, 'role', None) == 'doctor':
-                queryset = queryset.filter(doctor_id=tenant_user.id)
+            if getattr(self.request.user, 'is_patient', False):
+                patient_id = getattr(self.request.user, 'patient_id', None) or getattr(self.request.user, 'id', None)
+                queryset = queryset.filter(patient_id=patient_id)
+            else:
+                tenant_user = getattr(self.request.user, 'tenant_user', None)
+                if tenant_user and getattr(tenant_user, 'role', None) == 'doctor':
+                    queryset = queryset.filter(doctor_id=tenant_user.id)
         
         return queryset.order_by('scheduled_date', 'scheduled_time')
     

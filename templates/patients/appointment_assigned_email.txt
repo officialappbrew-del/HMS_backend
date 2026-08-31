@@ -1,0 +1,11 @@
+Hello {{ doctor_name }},
+
+A new appointment has been assigned to you at {{ tenant_name }}.
+
+Patient: {{ patient_name }}
+Date: {{ appointment_date }}
+Time: {{ appointment_time }}
+Type: {{ appointment_type }}
+{% if reason %}Reason: {{ reason }}
+{% endif %}
+Please review the appointment in your dashboard.

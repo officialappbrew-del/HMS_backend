@@ -281,7 +281,9 @@ class AppointmentSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             # Prefer the tenant-scoped user when available
-            validated_data['created_by'] = getattr(request.user, 'tenant_user', None) or request.user
+            created_by = getattr(request.user, 'tenant_user', None)
+            if created_by is not None:
+                validated_data['created_by'] = created_by
         validated_data.pop('send_reminder', None)
         validated_data.pop('reminder_channels', None)
         validated_data.pop('preferred_channel', None)
