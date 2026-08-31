@@ -59,10 +59,20 @@ class StandardPagination(PageNumberPagination):
 
 
 def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel=None):
-    """Send a reminder to the patient using the available contact channels."""
+    """
+    Send a reminder to the patient using the available contact channels.
+    
+    Uses the tenant's configured email settings for sending appointment reminders.
+    Falls back to global email settings if tenant configuration is incomplete.
+    """
     patient = getattr(appointment, 'patient', None)
     if patient is None:
         return {'status': 'skipped', 'channels': []}
+
+    tenant = getattr(appointment, 'tenant', None)
+    if tenant is None:
+        logger.warning('Appointment %s has no associated tenant', appointment.id)
+        return {'status': 'skipped', 'channels': [], 'error': 'No tenant found'}
 
     normalized_channels = []
     if channels:
@@ -79,14 +89,22 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
     )
 
     if 'email' in normalized_channels and patient.email:
-        send_mail(
-            'Appointment Reminder',
-            reminder_message,
-            settings.DEFAULT_FROM_EMAIL,
-            [patient.email],
-            fail_silently=False,
-        )
-        sent_channels.append('email')
+        try:
+            # Use tenant-specific email configuration
+            from tenants.communication import send_tenant_email
+            send_tenant_email(
+                tenant=tenant,
+                subject='Appointment Reminder',
+                message=reminder_message,
+                recipient_list=[patient.email],
+                fail_silently=False,
+            )
+            sent_channels.append('email')
+            logger.info('Appointment reminder email sent to patient %s (%s)', patient.id, patient.email)
+        except Exception as exc:
+            logger.error('Failed to send appointment reminder email to patient %s: %s', patient.id, exc)
+            if not hasattr(settings, 'EMAIL_DEBUG') or not settings.EMAIL_DEBUG:
+                raise
 
     if ('sms' in normalized_channels or 'whatsapp' in normalized_channels) and patient.phone:
         logger.info('Appointment reminder queued for patient %s via %s', patient.id, normalized_channels)

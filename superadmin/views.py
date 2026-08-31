@@ -584,9 +584,8 @@ class TenantAdminCreateView(APIView):
                 logger.info(f'📧 Sending welcome email synchronously to {admin_user.email} for tenant {tenant.name}')
                 try:
                     import datetime
-                    from django.core.mail import send_mail
                     from django.template.loader import render_to_string
-                    from tenants.communication import build_email_context, resolve_email_identity
+                    from tenants.communication import build_email_context, send_tenant_email
                     login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
                     base_context = {
                         'admin_name': admin_user.get_full_name() or admin_user.username,
@@ -600,25 +599,15 @@ class TenantAdminCreateView(APIView):
                     }
                     logger.info(f'   Building email context for tenant {tenant.id}')
                     context = build_email_context(tenant, extra=base_context)
-                    identity = resolve_email_identity(tenant)
-                    from_email = identity['from_email'] or settings.DEFAULT_FROM_EMAIL
-                    from_name = identity['from_name'] or tenant.name
                     subject = f'Welcome to {tenant.name} - Account Created'
-                    if from_email.lower() == admin_user.email.lower():
-                        logger.warning(f'   ⚠️ from_email ({from_email}) matches recipient email; SMTP servers often reject or silently drop same-from-to messages.')
-                        fallback_from = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
-                        if fallback_from and fallback_from.lower() != admin_user.email.lower():
-                            from_email = fallback_from
-                            logger.info(f'   Fallback from_email to {from_email}')
                     logger.info(f'   Rendering email templates...')
                     html_message = render_to_string('users/tenant_welcome_email.html', context)
                     plain_message = render_to_string('users/tenant_welcome_email.txt', context)
-                    logger.info(f'   SMTP settings: host={identity.get("host")} port={identity.get("port")} username={identity.get("username")} use_tls={identity.get("use_tls")}')
-                    logger.info(f'   Sending email via {settings.EMAIL_BACKEND} from={from_name} <{from_email}> to={admin_user.email}')
-                    send_mail(
+                    logger.info(f'   Sending email via {settings.EMAIL_BACKEND} to {admin_user.email}')
+                    send_tenant_email(
+                        tenant=tenant,
                         subject=subject,
                         message=plain_message,
-                        from_email=f'{from_name} <{from_email}>',
                         recipient_list=[admin_user.email],
                         html_message=html_message,
                         fail_silently=False,

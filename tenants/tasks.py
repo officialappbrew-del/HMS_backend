@@ -2,7 +2,6 @@ import logging
 from datetime import date, timedelta
 from django.utils import timezone
 from django.db.models import Q
-from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
 from celery import shared_task
@@ -122,23 +121,19 @@ def _send_expiry_email(tenant, days_remaining, notification_type):
     }
 
     try:
-        from tenants.communication import build_email_context, resolve_email_identity
+        from tenants.communication import build_email_context, send_tenant_email
         context = build_email_context(tenant, extra=context)
-        identity = resolve_email_identity(tenant)
-        from_email = identity['from_email'] or settings.DEFAULT_FROM_EMAIL
-        from_name = identity['from_name'] or tenant.name
-        from_email_full = f"{from_name} <{from_email}>"
         subject = f"{tenant.name} - Subscription Expiry Notice"
     except Exception:
-        from_email_full = settings.DEFAULT_FROM_EMAIL
+        from tenants.communication import send_tenant_email
 
     html_message = render_to_string('emails/subscription_expiry.html', context)
     plain_message = render_to_string('emails/subscription_expiry.txt', context)
 
-    send_mail(
+    send_tenant_email(
+        tenant=tenant,
         subject=subject,
         message=plain_message,
-        from_email=from_email_full,
         recipient_list=[tenant.billing_email or tenant.email],
         html_message=html_message,
         fail_silently=False,
@@ -146,10 +141,10 @@ def _send_expiry_email(tenant, days_remaining, notification_type):
 
 
 def send_staff_welcome_email(recipient_email, staff_name, tenant_id, employee_id, temporary_password, login_url):
-    """Send newly created tenant staff their first-login credentials."""
+    """Send newly created tenant staff their first-login credentials using tenant email configuration."""
     import datetime
     from tenants.models import Tenant
-    from tenants.communication import build_email_context, resolve_email_identity
+    from tenants.communication import build_email_context, send_tenant_email
 
     tenant = Tenant.objects.get(pk=tenant_id)
     subject = f'Welcome to {tenant.name} - Your Staff Account'
@@ -164,14 +159,11 @@ def send_staff_welcome_email(recipient_email, staff_name, tenant_id, employee_id
         'year': datetime.date.today().year,
     }
     context = build_email_context(tenant, extra=base_context)
-    identity = resolve_email_identity(tenant)
-    from_email = identity['from_email'] or settings.DEFAULT_FROM_EMAIL
-    from_name = identity['from_name'] or tenant.name
 
-    send_mail(
+    send_tenant_email(
+        tenant=tenant,
         subject=subject,
         message=render_to_string('users/staff_welcome_email.txt', context),
-        from_email=f'{from_name} <{from_email}>',
         recipient_list=[recipient_email],
         html_message=render_to_string('users/staff_welcome_email.html', context),
         fail_silently=False,

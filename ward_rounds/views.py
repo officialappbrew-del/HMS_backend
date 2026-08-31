@@ -185,8 +185,9 @@ class BedViewSet(TenantScopedModelViewSet):
         try:
             return super().create(request, *args, **kwargs)
         except IntegrityError as exc:
-            if 'ward_rounds_bed' in str(exc) and 'ward_id' in str(exc) and 'bed_id' in str(exc):
-                return Response({'detail': 'A bed with this ID already exists in this ward.'}, status=status.HTTP_400_BAD_REQUEST)
+            constraint = str(exc)
+            if 'ward_rounds_bed' in constraint and 'ward_id' in constraint and ('bed_number' in constraint or 'bed_id' in constraint):
+                return Response({'detail': 'A bed with this number already exists in this ward.'}, status=status.HTTP_400_BAD_REQUEST)
             raise
 
     def get_queryset(self):

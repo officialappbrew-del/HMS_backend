@@ -2584,11 +2584,13 @@ def _generate_verification_token(tenant, admin_user):
 
 
 def _send_verification_email(tenant, admin_user):
-    """Send the email-verification message (Django SMTP integration).
+    """Send the email-verification message using tenant-specific email configuration.
 
-    Returns ``(sent: bool, error: str|None)``. Mirrors the admin welcome-email
-    identity resolution so the tenant's configured sender is used when present.
+    Returns ``(sent: bool, error: str|None)``. Uses the tenant's configured sender
+    email when available, falling back to global defaults.
     """
+    from tenants.communication import build_email_context, send_tenant_email
+    
     token = _generate_verification_token(tenant, admin_user)
     verify_url = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')}/verify-email?token={token}"
 
@@ -2603,24 +2605,14 @@ def _send_verification_email(tenant, admin_user):
         'support_email': _get_system_setting('support_email', 'support@smartcarehms.com'),
     }
     context = build_email_context(tenant, extra=base_context)
-    try:
-        identity = resolve_email_identity(tenant)
-        from_email = identity['from_email'] or getattr(settings, 'DEFAULT_FROM_EMAIL', '')
-        from_name = identity['from_name'] or tenant.name
-    except Exception:
-        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
-        from_name = tenant.name
-    if str(from_email).lower() == admin_user.email.lower():
-        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
-
     subject = f'Verify your {tenant.name} account'
     try:
         html_message = render_to_string('tenants/email_verification_email.html', context)
         plain_message = render_to_string('tenants/email_verification_email.txt', context)
-        send_mail(
+        send_tenant_email(
+            tenant=tenant,
             subject=subject,
             message=plain_message,
-            from_email=f'{from_name} <{from_email}>',
             recipient_list=[admin_user.email],
             html_message=html_message,
             fail_silently=False,

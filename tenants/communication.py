@@ -129,3 +129,65 @@ def build_email_context(tenant, extra=None, request=None):
         context.update(extra)
     return context
 
+
+def send_tenant_email(tenant, subject, message, recipient_list, html_message=None, fail_silently=False):
+    """
+    Send an email using tenant-specific email configuration.
+    
+    This function ensures that all tenant-related emails use the tenant's 
+    configured email settings instead of global defaults. Falls back to 
+    Django's default email backend if tenant configuration is incomplete.
+    
+    Args:
+        tenant: The Tenant instance for which to send the email
+        subject: Email subject line
+        message: Plain text message body
+        recipient_list: List of recipient email addresses
+        html_message: Optional HTML message body
+        fail_silently: Whether to silently fail (default: False)
+    
+    Returns:
+        Number of emails sent (1 if successful, 0 if failed)
+    
+    Example:
+        >>> send_tenant_email(
+        ...     tenant=my_tenant,
+        ...     subject='Appointment Reminder',
+        ...     message='Your appointment is scheduled for...',
+        ...     recipient_list=['patient@example.com'],
+        ...     html_message='<p>Your appointment is scheduled for...</p>',
+        ... )
+    """
+    from django.core.mail import send_mail
+    
+    # Resolve tenant email identity
+    identity = resolve_email_identity(tenant)
+    from_email = identity.get('from_email') or ''
+    from_name = identity.get('from_name') or tenant.name
+    
+    # Format the from_email with from_name
+    if from_name and from_email:
+        from_email_full = f'{from_name} <{from_email}>'
+    elif from_email:
+        from_email_full = from_email
+    else:
+        # Fallback to Django default
+        from django.conf import settings
+        from_email_full = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    
+    # Ensure recipient_list is valid
+    if not recipient_list or not from_email_full:
+        if not fail_silently:
+            raise ValueError('recipient_list and from_email are required')
+        return 0
+    
+    # Send using Django's send_mail with tenant identity
+    return send_mail(
+        subject=subject,
+        message=message,
+        from_email=from_email_full,
+        recipient_list=recipient_list,
+        html_message=html_message,
+        fail_silently=fail_silently,
+    )
+
