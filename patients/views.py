@@ -623,9 +623,28 @@ class PatientViewSet(TenantScopedModelViewSet):
         appointments = patient.appointments.all().order_by('-scheduled_date', '-scheduled_time')
         lab_orders = LabOrder.objects.filter(tenant=patient.tenant, patient=patient).select_related('test').prefetch_related('results').order_by('-ordered_date')
         documents = patient.documents.all().order_by('-upload_date')
+        tenant = patient.tenant
+        tenant_logo_url = ''
+        if tenant.logo:
+            try:
+                tenant_logo_url = request.build_absolute_uri(tenant.logo.url)
+            except Exception:
+                tenant_logo_url = ''
 
         return Response({
             'patient': PatientSerializer(patient, context=self.get_serializer_context()).data,
+            'tenant': {
+                'name': tenant.name,
+                'code': tenant.code,
+                'email': tenant.email,
+                'phone': tenant.phone,
+                'address': tenant.address,
+                'city': tenant.city,
+                'state': tenant.state.name if tenant.state else '',
+                'facility_type': tenant.facility_type.name if tenant.facility_type else '',
+                'website': tenant.website,
+                'logo_url': tenant_logo_url,
+            },
             'appointments': AppointmentSerializer(appointments, many=True).data,
             'lab_orders': LabOrderSerializer(lab_orders, many=True).data,
             'documents': PatientDocumentSerializer(documents, many=True).data,

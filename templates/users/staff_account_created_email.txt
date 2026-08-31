@@ -1,0 +1,9 @@
+Hello {{ admin_name }},
+
+Your account for {{ tenant_name }} has been created successfully.
+
+Login URL: {{ login_url }}
+Employee ID: {{ user_id }}
+Temporary Password: {{ temporary_password }}
+
+Please change your temporary password after signing in. Contact your hospital administrator if you need assistance.

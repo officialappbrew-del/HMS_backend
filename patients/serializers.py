@@ -135,18 +135,19 @@ class PatientLoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     def validate(self, data):
-        identifier = data.get('identifier')
-        password = data.get('password') or ''
+        identifier = str(data.get('identifier') or '').strip()
+        password = str(data.get('password') or '')
 
         patient = None
 
         if identifier:
-            patient = Patient.objects.filter(login_id=identifier).first()
+            # Prefer MRN when identifiers overlap in legacy patient records.
+            patient = Patient.objects.filter(mrn__iexact=identifier).first()
             if patient is None:
-                patient = Patient.objects.filter(mrn=identifier).first()
+                patient = Patient.objects.filter(hospital_number__iexact=identifier).first()
             if patient is None:
                 try:
-                    patient = Patient.objects.get(hospital_number=identifier)
+                    patient = Patient.objects.get(login_id__iexact=identifier)
                 except Patient.DoesNotExist:
                     try:
                         patient = Patient.objects.get(id=int(identifier))
@@ -160,12 +161,16 @@ class PatientLoginSerializer(serializers.Serializer):
         # (or hospital number/login ID) as the password fallback.
         if not patient.password:
             valid_fallbacks = {
-                patient.mrn,
-                patient.hospital_number,
-                patient.login_id,
                 '',
             }
-            if password in valid_fallbacks:
+            normalized_fallbacks = {
+                value.casefold() for value in (
+                    patient.mrn,
+                    patient.hospital_number,
+                    patient.login_id,
+                ) if value
+            }
+            if password.casefold() in valid_fallbacks or password.casefold() in normalized_fallbacks:
                 data['patient'] = patient
                 return data
             raise serializers.ValidationError(

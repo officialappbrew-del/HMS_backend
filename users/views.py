@@ -767,7 +767,7 @@ class AuthenticationView(APIView):
         """Authenticate a patient using their identifier and password."""
         from django.db import connection
 
-        identifier = data.get('user_id') or data.get('identifier')
+        identifier = str(data.get('user_id') or data.get('identifier') or '').strip()
         password = data.get('password')
 
         if not identifier or password is None:
@@ -785,26 +785,36 @@ class AuthenticationView(APIView):
             connection.set_schema(tenant.schema_name)
             try:
                 # Try to find patient by login_id, hospital_number, or mrn
-                patient = Patient.objects.filter(login_id=identifier).first()
+                # MRN is the requested patient identifier; check it first
+                # because legacy records can have overlapping login IDs.
+                patient = Patient.objects.filter(mrn__iexact=identifier).first()
 
                 if not patient:
-                    patient = Patient.objects.filter(hospital_number=identifier).first()
+                    patient = Patient.objects.filter(hospital_number__iexact=identifier).first()
 
                 if not patient:
-                    patient = Patient.objects.filter(mrn=identifier).first()
+                    patient = Patient.objects.filter(login_id__iexact=identifier).first()
 
                 if not patient:
                     continue
 
+                patient_mrn_match = bool(
+                    patient.mrn and patient.mrn.casefold() == identifier.casefold()
+                )
+
                 password_matches = False
                 if patient.password:
-                    password_matches = patient.check_password(password) or password == patient.hospital_number or password == patient.login_id
+                    password_matches = (
+                        patient.check_password(password)
+                        or password.casefold() == (patient.hospital_number or '').casefold()
+                        or password.casefold() == (patient.login_id or '').casefold()
+                    )
                 else:
                     password_matches = (
                         password == '' or
-                        password == patient.mrn or
-                        password == patient.hospital_number or
-                        password == patient.login_id
+                        password.casefold() == (patient.mrn or '').casefold() or
+                        password.casefold() == (patient.hospital_number or '').casefold() or
+                        password.casefold() == (patient.login_id or '').casefold()
                     )
 
                 if password_matches:
@@ -832,6 +842,21 @@ class AuthenticationView(APIView):
                         },
                         'is_patient': True,
                     })
+
+                if patient_mrn_match:
+                    logger.info(
+                        '[AUTH] Patient MRN found but password was invalid: patient_id=%s',
+                        patient.id,
+                    )
+                    return Response(
+                        {
+                            'error': (
+                                'Invalid patient password. This patient already has a password configured; '
+                                'MRN may be used as the password only before password setup.'
+                            )
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                    )
             finally:
                 connection.set_schema('public')
 

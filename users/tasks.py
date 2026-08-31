@@ -153,10 +153,11 @@ def send_tenant_welcome_email(recipient_email, admin_name, tenant_name, temporar
         result = send_tenant_email(
             tenant=tenant_instance,
             subject=subject,
-            message=render_to_string('users/tenant_welcome_email.txt', context),
+            message=render_to_string('users/staff_account_created_email.txt', context),
             recipient_list=[recipient_email],
-            html_message=render_to_string('users/tenant_welcome_email.html', context),
+            html_message=render_to_string('users/staff_account_created_email.html', context),
             fail_silently=False,
+            allow_global_fallback=False,
         )
     else:
         # Fall back to global settings if tenant not available

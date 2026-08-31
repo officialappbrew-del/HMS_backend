@@ -1297,16 +1297,31 @@ class TenantUserViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         temporary_password = request.data.get('password')
+        send_credentials = str(request.data.get('send_credentials', '')).lower() in {
+            '1', 'true', 'yes', 'on'
+        }
         response = super().create(request, *args, **kwargs)
         if response.status_code >= 400:
             return response
 
         staff = self.get_queryset().filter(pk=response.data.get('id')).first()
+        if not send_credentials:
+            response.data['welcome_email_status'] = 'not_requested'
+            return response
+
         if not staff or not temporary_password or not staff.email:
             response.data['welcome_email_status'] = 'not_queued'
             return response
 
         from users.tasks import send_tenant_welcome_email, send_tenant_welcome_email_task
+        from tenants.communication import TenantEmailConfigurationError, resolve_email_identity
+        try:
+            resolve_email_identity(staff.tenant, allow_global_fallback=False)
+        except TenantEmailConfigurationError:
+            response.data['welcome_email_status'] = 'tenant_email_not_configured'
+            response.data['welcome_email_error'] = 'The tenant has not configured complete email credentials. The account was created, but no email was sent.'
+            return response
+
         login_url = f"{getattr(settings, 'FRONTEND_URL', '').rstrip('/')}/login"
         email_args = (
             staff.email,
