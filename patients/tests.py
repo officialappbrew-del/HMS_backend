@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from datetime import date
 
 from django.test import TestCase
+from rest_framework.test import APIRequestFactory
 from django.utils import timezone
 from django.core.files.base import ContentFile
 from rest_framework.test import APIRequestFactory
@@ -106,7 +107,7 @@ class PatientAuditTrailTests(TestCase):
     def setUp(self):
         country = Country.objects.create(name='Nigeria', code='NG')
         state = State.objects.create(name='Lagos', code='LA', country=country)
-        lga = LGA.objects.create(name='Ikeja', code='IKJ', state=state)
+        lga = LGA.objects.create(name='Ikeja', state=state)
         facility_type = FacilityType.objects.create(name='Hospital', code='HOSP')
         subscription_plan = SubscriptionPlan.objects.create(
             name='Basic',
@@ -207,6 +208,55 @@ class PatientAuditTrailTests(TestCase):
         self.assertGreaterEqual(len(response.data.get('results', response.data)), 1)
 
 
+class PatientPasswordRefreshActionTests(TestCase):
+    def setUp(self):
+        country = Country.objects.create(name='Nigeria', code='NG')
+        state = State.objects.create(name='Lagos', code='LA', country=country)
+        lga = LGA.objects.create(name='Ikeja', state=state)
+        facility_type = FacilityType.objects.create(name='Hospital', code='HOSP')
+        plan = SubscriptionPlan.objects.create(
+            name='Basic', code='BASIC', price_monthly=0, price_quarterly=0,
+            price_yearly=0, currency='NGN', max_users=10, max_patients=100,
+            max_storage_gb=5, trial_period_days=30,
+        )
+        self.tenant = Tenant.objects.create(
+            name='Refresh Clinic', code='REF', domain='refreshclinic.localhost',
+            schema_name='tenant_refreshclinic', email='refresh@example.com',
+            phone='08011111111', address='1 Refresh Street', city='Lagos',
+            state=state, lga=lga, country=country, facility_type=facility_type,
+            registration_number='REGREF123', subscription_plan=plan,
+        )
+        self.patient = Patient.objects.create(
+            tenant=self.tenant,
+            first_name='Refresh', last_name='Patient',
+            date_of_birth=date(1995, 5, 6), gender='female',
+            phone='08022222222', email='refreshpatient@example.com',
+            address='Surulere', state='Lagos', country='Nigeria',
+        )
+        self.patient.set_password('OldPass123!')
+        self.patient.save(update_fields=['password'])
+
+    def test_patient_refresh_password_returns_new_password_and_updates_hash(self):
+        user = SimpleNamespace(
+            id=1,
+            is_authenticated=True, is_active=True, is_superuser=False, is_staff=True,
+            role='admin', tenant_user=SimpleNamespace(tenant=self.tenant),
+            get_full_name=lambda: 'Refresh Admin',
+        )
+        request = APIRequestFactory().post(f'/api/v1/patients/patients/{self.patient.id}/refresh-password/')
+        request.user = user
+        request.META['HTTP_USER_AGENT'] = 'Mozilla/5.0 Test Browser'
+        request.META['REMOTE_ADDR'] = '127.0.0.1'
+
+        response = PatientViewSet.as_view({'post': 'refresh_password'})(request, pk=self.patient.id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('password', response.data)
+        self.assertNotEqual(response.data['password'], 'OldPass123!')
+        self.patient.refresh_from_db()
+        self.assertTrue(self.patient.check_password(response.data['password']))
+
+
 class PatientPortalAuthTests(TestCase):
     def _create_patient(self, tenant):
         request = SimpleNamespace(user=SimpleNamespace(is_authenticated=False))
@@ -232,7 +282,7 @@ class PatientPortalAuthTests(TestCase):
     def _create_tenant(self):
         country = Country.objects.create(name='Nigeria', code='NG')
         state = State.objects.create(name='Lagos', code='LA', country=country)
-        lga = LGA.objects.create(name='Ikeja', code='IKJ', state=state)
+        lga = LGA.objects.create(name='Ikeja', state=state)
         facility_type = FacilityType.objects.create(name='Hospital', code='HOSP')
         subscription_plan = SubscriptionPlan.objects.create(
             name='Basic',
@@ -275,7 +325,7 @@ class PatientPortalAuthTests(TestCase):
         self.assertTrue(login_serializer.is_valid(), login_serializer.errors)
         self.assertEqual(login_serializer.validated_data['patient'], patient)
 
-    def test_patient_can_login_with_hospital_number_as_password_fallback(self):
+    def test_patient_cannot_use_hospital_number_as_password_after_password_is_set(self):
         tenant = self._create_tenant()
         patient = self._create_patient(tenant)
         patient.set_password('secret-password')
@@ -286,8 +336,8 @@ class PatientPortalAuthTests(TestCase):
             'password': patient.hospital_number,
         })
 
-        self.assertTrue(login_serializer.is_valid(), login_serializer.errors)
-        self.assertEqual(login_serializer.validated_data['patient'], patient)
+        self.assertFalse(login_serializer.is_valid())
+        self.assertIn('Invalid patient identifier or password.', str(login_serializer.errors))
 
     def test_patient_can_login_with_mrn_as_identifier_and_password_when_no_password_is_set(self):
         tenant = self._create_tenant()

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.utils import timezone
 from django.db import transaction
+from django.contrib.auth.password_validation import validate_password
 from decimal import Decimal
 import re
 
@@ -9,6 +10,8 @@ from .models import (
     PatientAllergy, PatientMedication, Appointment,
     BulkPatientUpload, PatientMerge
 )
+from tenants.models import Tenant
+from users.models import PasswordResetToken
 
 
 class PatientSerializer(serializers.ModelSerializer):
@@ -24,7 +27,7 @@ class PatientSerializer(serializers.ModelSerializer):
     dnr_order_date = serializers.DateField(required=False, allow_null=True)
     login_id = serializers.CharField(required=False, allow_blank=True)
     preferred_language = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    tenant = serializers.PrimaryKeyRelatedField(read_only=True)
+    tenant = serializers.PrimaryKeyRelatedField(queryset=Tenant.objects.all(), required=False, allow_null=True)
     initial_charges = serializers.ListField(child=serializers.DictField(), write_only=True, required=False)
 
     class Meta:
@@ -66,6 +69,7 @@ class PatientSerializer(serializers.ModelSerializer):
             tenant_user = getattr(request.user, 'tenant_user', None)
             if tenant_user is not None:
                 validated_data['registered_by'] = tenant_user
+                validated_data.setdefault('tenant', getattr(tenant_user, 'tenant', None))
         with transaction.atomic():
             patient = Patient.objects.create(**validated_data)
             if initial_charges:
@@ -177,7 +181,7 @@ class PatientLoginSerializer(serializers.Serializer):
                 "This patient has no password set. Use the MRN as the password fallback."
             )
 
-        if patient.check_password(password) or password == patient.hospital_number or password == patient.login_id:
+        if patient.check_password(password):
             data['patient'] = patient
             return data
 
@@ -322,6 +326,102 @@ class PatientMergeSerializer(serializers.ModelSerializer):
 
     def get_moved_record_count(self, obj):
         return len(obj.moved_records or [])
+
+
+class PatientPasswordResetRequestSerializer(serializers.Serializer):
+    """Request a password reset token for a patient."""
+    identifier = serializers.CharField(required=True)
+    
+    def validate(self, data):
+        identifier = data.get('identifier', '').strip()
+        if not identifier:
+            raise serializers.ValidationError({'identifier': 'Please enter your patient ID, hospital number, MRN, or email.'})
+        return data
+
+
+class PatientPasswordResetVerifySerializer(serializers.Serializer):
+    """Verify a reset token before allowing a password to be chosen."""
+    token = serializers.CharField(required=True)
+
+    def validate(self, data):
+        token = data.get('token', '').strip()
+        if not token:
+            raise serializers.ValidationError({'token': 'Reset token is required.'})
+
+        reset_token = PasswordResetToken.objects.filter(token=token).first()
+        if not reset_token:
+            raise serializers.ValidationError({'token': 'Invalid reset token.'})
+        if not reset_token.is_valid():
+            raise serializers.ValidationError({'token': 'Reset token has expired or already been used.'})
+
+        data['token'] = token
+        data['reset_token'] = reset_token
+        return data
+
+
+class PatientPasswordResetConfirmSerializer(serializers.Serializer):
+    """Confirm password reset with token for a patient."""
+    token = serializers.CharField(required=True)
+    new_password = serializers.CharField(required=True, write_only=True)
+    confirm_password = serializers.CharField(required=True, write_only=True)
+    
+    def validate(self, data):
+        token = data.get('token')
+        new_password = data.get('new_password')
+        confirm_password = data.get('confirm_password')
+        
+        if not token or not token.strip():
+            raise serializers.ValidationError({'token': 'Reset token is required.'})
+        
+        if new_password != confirm_password:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        
+        try:
+            validate_password(new_password)
+        except Exception as e:
+            raise serializers.ValidationError({'new_password': list(e)})
+        
+        reset_token = PasswordResetToken.objects.filter(token=token.strip()).first()
+        if not reset_token:
+            raise serializers.ValidationError({'token': 'Invalid reset token.'})
+        
+        if not reset_token.is_valid():
+            raise serializers.ValidationError({'token': 'Reset token has expired or already been used.'})
+
+        if not reset_token.verified_at:
+            raise serializers.ValidationError({'token': 'Reset token must be verified before choosing a new password.'})
+        
+        data['reset_token'] = reset_token
+        return data
+
+
+class PatientPasswordChangeSerializer(serializers.Serializer):
+    """Change password for authenticated patient."""
+    old_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(required=True, write_only=True)
+    confirm_password = serializers.CharField(required=True, write_only=True)
+    
+    def validate(self, data):
+        old_password = data.get('old_password')
+        new_password = data.get('new_password')
+        confirm_password = data.get('confirm_password')
+        
+        if new_password != confirm_password:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        
+        try:
+            validate_password(new_password)
+        except Exception as e:
+            raise serializers.ValidationError({'new_password': list(e)})
+        
+        patient = self.context['request'].user
+        if not hasattr(patient, 'check_password') or not patient.check_password(old_password):
+            raise serializers.ValidationError({'old_password': 'Current password is incorrect.'})
+        
+        if old_password == new_password:
+            raise serializers.ValidationError({'new_password': 'New password must be different from current password.'})
+        
+        return data
 
 
 class AppointmentScheduleSerializer(serializers.Serializer):

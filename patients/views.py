@@ -2,9 +2,11 @@ import csv
 import time
 import threading
 import logging
+import uuid
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
@@ -24,10 +26,14 @@ from .serializers import (
     PatientSerializer, PatientVisitSerializer, PatientDocumentSerializer,
     PatientAllergySerializer, PatientMedicationSerializer, AppointmentSerializer,
     PatientSearchSerializer, AppointmentScheduleSerializer, PatientLoginSerializer,
-    BulkPatientUploadSerializer, PatientMergeSerializer
+    BulkPatientUploadSerializer, PatientMergeSerializer,
+    PatientPasswordResetRequestSerializer, PatientPasswordResetVerifySerializer,
+    PatientPasswordResetConfirmSerializer, PatientPasswordChangeSerializer
 )
 from tenants.models import TenantUser, Department
 from core.views import TenantScopedModelViewSet
+from users.models import PasswordResetToken
+from users.tasks import send_password_reset_email_task
 from core.models import AuditLog
 from .services import merge_patients, unmerge_patient
 
@@ -469,6 +475,28 @@ class PatientViewSet(TenantScopedModelViewSet):
             return Response({'detail': 'Only administrators can access merge history.'}, status=status.HTTP_403_FORBIDDEN)
         records = PatientMerge.objects.filter(tenant=self.get_tenant()).select_related('source_patient', 'survivor_patient', 'merged_by')
         return Response(PatientMergeSerializer(records, many=True, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=['post'], url_path='refresh-password')
+    def refresh_password(self, request, pk=None):
+        """Generate and save a fresh login password for a patient."""
+        patient = self.get_object()
+        generated_password = str(request.data.get('password') or '').strip() or self._generate_temp_password()
+
+        patient.set_password(generated_password)
+        patient.save(update_fields=['password'])
+
+        return Response({
+            'id': patient.id,
+            'login_id': patient.login_id or patient.hospital_number or patient.mrn,
+            'password': generated_password,
+            'message': 'Password refreshed successfully.',
+        })
+
+    def _generate_temp_password(self, length=12):
+        import secrets
+        import string
+        alphabet = string.ascii_letters + string.digits + '!@#$%'
+        return ''.join(secrets.choice(alphabet) for _ in range(length))
 
     # ===== Audit logging =====
     def _get_client_ip(self):
@@ -1562,3 +1590,136 @@ def _process_bulk_upload(upload_id):
 
     except BulkPatientUpload.DoesNotExist:
         pass
+
+
+# ==================== PATIENT PASSWORD RESET VIEWS ====================
+
+
+class PatientPasswordResetRequestView(APIView):
+    """Request a password reset token for a patient."""
+    permission_classes = [permissions.AllowAny]
+    
+    def get_client_ip(self, request):
+        """Get client IP address."""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+    
+    def post(self, request):
+        serializer = PatientPasswordResetRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        identifier = serializer.validated_data['identifier'].strip()
+        ip_address = self.get_client_ip(request)
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
+        
+        patient = None
+        
+        if identifier:
+            # Try to find patient by hospital_number, login_id, mrn, or email
+            patient = Patient.objects.filter(hospital_number__iexact=identifier).first()
+            if not patient:
+                patient = Patient.objects.filter(login_id__iexact=identifier).first()
+            if not patient:
+                patient = Patient.objects.filter(mrn__iexact=identifier).first()
+            if not patient:
+                patient = Patient.objects.filter(email__iexact=identifier).first()
+        
+        if patient and patient.email:
+            recipient_email = patient.email
+            reset_token = PasswordResetToken.objects.create(
+                email=recipient_email,
+                token=uuid.uuid4().hex + uuid.uuid4().hex,
+                expires_at=timezone.now() + timezone.timedelta(hours=1),
+                user_type='patient',
+                user_id=patient.id,
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+
+            logger.info('Sending password reset email to patient %s (%s)', patient.id, recipient_email)
+            try:
+                send_password_reset_email_task.run(
+                    recipient_email=recipient_email,
+                    reset_token=reset_token.token,
+                    user_name=patient.get_full_name(),
+                )
+                logger.info('Password reset email sent to patient %s', patient.id)
+            except Exception:
+                logger.exception('Unable to send password reset email to patient %s', patient.id)
+        
+        return Response({
+            'detail': 'If an account exists for this patient identifier, a password reset email has been sent.',
+        })
+
+
+class PatientPasswordResetVerifyView(APIView):
+    """Verify a reset token before allowing a password to be chosen for a patient."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = PatientPasswordResetVerifySerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        reset_token = serializer.validated_data['reset_token']
+        reset_token.verified_at = timezone.now()
+        reset_token.save(update_fields=['verified_at'])
+        return Response({'detail': 'Reset token verified. You can now choose a new password.'})
+
+
+class PatientPasswordResetConfirmView(APIView):
+    """Confirm password reset with token for a patient."""
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        serializer = PatientPasswordResetConfirmSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        reset_token = serializer.validated_data['reset_token']
+        new_password = serializer.validated_data['new_password']
+        
+        patient = Patient.objects.filter(id=reset_token.user_id).first()
+        
+        if not patient:
+            return Response({'error': 'Patient not found.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        patient.set_password(new_password)
+        patient.save(update_fields=['password'])
+        
+        reset_token.is_used = True
+        reset_token.save(update_fields=['is_used'])
+        
+        logger.info('Patient password reset successfully: patient_id=%s', patient.id)
+        
+        return Response({'detail': 'Password reset successfully. You can now log in with your new password.'})
+
+
+class PatientPasswordChangeView(APIView):
+    """Change password for authenticated patient."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        # Verify patient is authenticated and is a patient
+        if not getattr(request.user, 'is_patient', False) and not isinstance(request.user, Patient):
+            return Response({'error': 'Only authenticated patients can change their password.'}, 
+                          status=status.HTTP_403_FORBIDDEN)
+        
+        serializer = PatientPasswordChangeSerializer(data=request.data, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        new_password = serializer.validated_data['new_password']
+        patient = request.user
+        
+        patient.set_password(new_password)
+        patient.save(update_fields=['password'])
+        
+        logger.info('Patient password changed successfully: patient_id=%s', patient.id)
+        
+        return Response({'detail': 'Password changed successfully.'})

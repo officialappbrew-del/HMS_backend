@@ -1507,6 +1507,30 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'Password changed successfully'})
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'], url_path='refresh-password')
+    def refresh_password(self, request, pk=None):
+        """Generate and save a fresh login password for a staff user."""
+        staff = self.get_object()
+        generated_password = str(request.data.get('password') or '').strip() or self._generate_temp_password()
+
+        staff.set_password(generated_password)
+        staff.password_changed_at = timezone.now()
+        staff.save(update_fields=['password', 'password_changed_at'])
+
+        return Response({
+            'id': staff.id,
+            'employee_id': staff.employee_id or staff.username,
+            'email': staff.email,
+            'password': generated_password,
+            'message': 'Password refreshed successfully.',
+        })
+
+    def _generate_temp_password(self):
+        import secrets
+        import string
+        alphabet = string.ascii_letters + string.digits + '!@#$%'
+        return ''.join(secrets.choice(alphabet) for _ in range(12))
     
     def get_client_ip(self, request):
         """Get client IP address."""

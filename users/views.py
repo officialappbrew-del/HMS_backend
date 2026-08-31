@@ -804,11 +804,7 @@ class AuthenticationView(APIView):
 
                 password_matches = False
                 if patient.password:
-                    password_matches = (
-                        patient.check_password(password)
-                        or password.casefold() == (patient.hospital_number or '').casefold()
-                        or password.casefold() == (patient.login_id or '').casefold()
-                    )
+                    password_matches = patient.check_password(password)
                 else:
                     password_matches = (
                         password == '' or
