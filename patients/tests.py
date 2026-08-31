@@ -288,3 +288,15 @@ class PatientPortalAuthTests(TestCase):
 
         self.assertTrue(login_serializer.is_valid(), login_serializer.errors)
         self.assertEqual(login_serializer.validated_data['patient'], patient)
+
+    def test_patient_can_login_with_mrn_as_identifier_and_password_when_no_password_is_set(self):
+        tenant = self._create_tenant()
+        patient = self._create_patient(tenant)
+
+        login_serializer = PatientLoginSerializer(data={
+            'identifier': patient.mrn,
+            'password': patient.mrn,
+        })
+
+        self.assertTrue(login_serializer.is_valid(), login_serializer.errors)
+        self.assertEqual(login_serializer.validated_data['patient'], patient)

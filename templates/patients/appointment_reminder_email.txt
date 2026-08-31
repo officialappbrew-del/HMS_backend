@@ -1,0 +1,12 @@
+Hello {{ patient_name }},
+
+Your appointment at {{ tenant_name }} has been scheduled.
+
+Appointment details
+Date: {{ appointment_date }}
+Time: {{ appointment_time }}
+Type: {{ appointment_type }}
+{% if doctor_name %}Doctor: {{ doctor_name }}
+{% endif %}{% if reason %}Reason: {{ reason }}
+{% endif %}
+Please arrive a few minutes early. Contact the hospital directly if you need to reschedule or cancel.

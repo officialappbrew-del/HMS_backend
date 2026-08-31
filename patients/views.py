@@ -13,6 +13,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
 from django.utils.text import slugify
+from django.template.loader import render_to_string
 
 from .models import (
     Patient, PatientVisit, PatientDocument,
@@ -53,7 +54,7 @@ def _write_audit_log_async(payload):
 
 
 class StandardPagination(PageNumberPagination):
-    page_size = 20
+    page_size = 10
     page_size_query_param = 'page_size'
     max_page_size = 1000
 
@@ -91,20 +92,45 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
     if 'email' in normalized_channels and patient.email:
         try:
             # Use tenant-specific email configuration
-            from tenants.communication import send_tenant_email
+            from tenants.communication import (
+                TenantEmailConfigurationError,
+                build_email_context,
+                send_tenant_email,
+            )
+            email_context = build_email_context(tenant, extra={
+                'app_name': getattr(settings, 'APP_NAME', 'SmartCare HMS'),
+                'patient_name': patient.get_full_name(),
+                'appointment_date': appointment.scheduled_date,
+                'appointment_time': appointment.scheduled_time,
+                'appointment_type': appointment.get_appointment_type_display(),
+                'doctor_name': appointment.doctor.get_full_name() if appointment.doctor else '',
+                'reason': appointment.reason,
+            })
             send_tenant_email(
                 tenant=tenant,
-                subject='Appointment Reminder',
-                message=reminder_message,
+                subject=f'{tenant.name} - Appointment Confirmation',
+                message=render_to_string('patients/appointment_reminder_email.txt', email_context),
                 recipient_list=[patient.email],
+                html_message=render_to_string('patients/appointment_reminder_email.html', email_context),
                 fail_silently=False,
+                allow_global_fallback=False,
             )
             sent_channels.append('email')
             logger.info('Appointment reminder email sent to patient %s (%s)', patient.id, patient.email)
+        except TenantEmailConfigurationError:
+            logger.warning('Tenant email credentials are not configured for appointment %s', appointment.id)
+            return {
+                'status': 'partial',
+                'channels': sent_channels,
+                'error': 'Appointment saved, but this tenant has not configured its email credentials. The confirmation email was not sent.',
+            }
         except Exception as exc:
             logger.error('Failed to send appointment reminder email to patient %s: %s', patient.id, exc)
-            if not hasattr(settings, 'EMAIL_DEBUG') or not settings.EMAIL_DEBUG:
-                raise
+            return {
+                'status': 'partial',
+                'channels': sent_channels,
+                'error': 'Appointment saved, but the tenant confirmation email could not be sent. Please check the tenant email settings.',
+            }
 
     if ('sms' in normalized_channels or 'whatsapp' in normalized_channels) and patient.phone:
         logger.info('Appointment reminder queued for patient %s via %s', patient.id, normalized_channels)
@@ -1049,14 +1075,17 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         appointment = serializer.instance
 
         if request.data.get('send_reminder', False):
-            _dispatch_appointment_reminder(
+            reminder_result = _dispatch_appointment_reminder(
                 appointment,
                 channels=request.data.get('reminder_channels') or [],
                 preferred_channel=request.data.get('preferred_channel'),
             )
 
         headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        response_data = dict(serializer.data)
+        if request.data.get('send_reminder', False) and reminder_result.get('error'):
+            response_data['notification_warning'] = reminder_result['error']
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
     
     def get_queryset(self):
         queryset = super().get_queryset().select_related(

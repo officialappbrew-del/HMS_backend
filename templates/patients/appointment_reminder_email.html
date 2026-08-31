@@ -1,0 +1,22 @@
+{% extends "emails/base_email.html" %}
+
+{% block title %}Appointment Confirmation{% endblock %}
+{% block subtitle %}Your appointment has been scheduled{% endblock %}
+
+{% block body %}
+<p style="margin:0 0 12px; font-size:16px; color:#111827; font-weight:600;">Hello {{ patient_name }},</p>
+<p style="margin:0 0 18px; font-size:14px; color:#374151; line-height:1.6;">
+  Your appointment at <strong>{{ tenant_name }}</strong> has been scheduled. Please keep the details below for reference.
+</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:18px 0;">
+  <tr><td style="background:#f8fafc; border:1px dashed #cbd5e1; border-radius:12px; padding:18px 20px;">
+    <p style="margin:0 0 10px; font-size:13px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; font-weight:600;">Appointment Details</p>
+    <p style="margin:7px 0; font-size:14px; color:#374151;"><strong style="color:#111827;">Date:</strong> {{ appointment_date }}</p>
+    <p style="margin:7px 0; font-size:14px; color:#374151;"><strong style="color:#111827;">Time:</strong> {{ appointment_time }}</p>
+    <p style="margin:7px 0; font-size:14px; color:#374151;"><strong style="color:#111827;">Type:</strong> {{ appointment_type }}</p>
+    {% if doctor_name %}<p style="margin:7px 0; font-size:14px; color:#374151;"><strong style="color:#111827;">Doctor:</strong> {{ doctor_name }}</p>{% endif %}
+    {% if reason %}<p style="margin:7px 0; font-size:14px; color:#374151;"><strong style="color:#111827;">Reason:</strong> {{ reason }}</p>{% endif %}
+  </td></tr>
+</table>
+<p style="margin:0 0 16px; font-size:14px; color:#374151; line-height:1.6;">Please arrive a few minutes early. Contact the hospital directly if you need to reschedule or cancel.</p>
+{% endblock %}

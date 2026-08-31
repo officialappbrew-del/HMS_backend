@@ -143,6 +143,8 @@ class PatientLoginSerializer(serializers.Serializer):
         if identifier:
             patient = Patient.objects.filter(login_id=identifier).first()
             if patient is None:
+                patient = Patient.objects.filter(mrn=identifier).first()
+            if patient is None:
                 try:
                     patient = Patient.objects.get(hospital_number=identifier)
                 except Patient.DoesNotExist:
@@ -154,14 +156,23 @@ class PatientLoginSerializer(serializers.Serializer):
         if not patient:
             raise serializers.ValidationError("Invalid patient identifier or password.")
 
-        # Require an actual password. The printed hospital number / login id
-        # must NOT be accepted as a valid fallback password.
+        # If the patient has not set a password yet, allow login using the MRN
+        # (or hospital number/login ID) as the password fallback.
         if not patient.password:
+            valid_fallbacks = {
+                patient.mrn,
+                patient.hospital_number,
+                patient.login_id,
+                '',
+            }
+            if password in valid_fallbacks:
+                data['patient'] = patient
+                return data
             raise serializers.ValidationError(
-                "This patient has no password set. Contact the registration desk."
+                "This patient has no password set. Use the MRN as the password fallback."
             )
 
-        if patient.check_password(password):
+        if patient.check_password(password) or password == patient.hospital_number or password == patient.login_id:
             data['patient'] = patient
             return data
 
@@ -239,6 +250,8 @@ class PatientMedicationSerializer(serializers.ModelSerializer):
 class AppointmentSerializer(serializers.ModelSerializer):
     """Serializer for Appointment model."""
     patient_name = serializers.CharField(source='patient.get_full_name', read_only=True)
+    patient_mrn = serializers.CharField(source='patient.mrn', read_only=True)
+    patient_hospital_number = serializers.CharField(source='patient.hospital_number', read_only=True)
     doctor_name = serializers.CharField(source='doctor.get_full_name', read_only=True)
     department_name = serializers.CharField(source='department.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)

@@ -37,6 +37,8 @@ from .serializers import (
 from core.permissions import IsSystemAdmin
 from core.models import AuditLog
 from tenants.models import Tenant, TenantUser
+from patients.models import Patient
+from patients.serializers import PatientLoginSerializer
 
 
 def _set_auth_cookies(response, access_token, refresh_token=None):
@@ -499,8 +501,15 @@ class AuthenticationView(APIView):
             logger.info(f"[AUTH] Routing to tenant auth: tenant_domain={tenant_domain} tenant_id={tenant_id_from_body}")
             return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id_from_body)
 
+        # An explicit user_id can identify a patient or tenant employee even
+        # when the frontend also sends username/identifier aliases.
         if data.get('user_id') and data.get('password'):
-            logger.info(f"[AUTH] Routing to tenant auth by user_id: user_id={data.get('user_id')}")
+            # Try patient authentication first
+            patient_result = self.authenticate_patient_user(data, request)
+            if patient_result:
+                return patient_result
+            # If patient auth fails, try tenant user auth
+            logger.info(f"[AUTH] Patient auth failed, routing to tenant auth by user_id: user_id={data.get('user_id')}")
             return self.authenticate_tenant_user_by_user_id(data, request)
 
         logger.info(f"[AUTH] Routing to global auth: identifier={data.get('username') or data.get('identifier')}")
@@ -754,6 +763,80 @@ class AuthenticationView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    def authenticate_patient_user(self, data, request):
+        """Authenticate a patient using their identifier and password."""
+        from django.db import connection
+
+        identifier = data.get('user_id') or data.get('identifier')
+        password = data.get('password')
+
+        if not identifier or password is None:
+            return None
+
+        # Try to find the patient across all active tenants
+        active_tenants = Tenant.objects.filter(
+            subscription_status__in=[
+                Tenant.SubscriptionStatus.ACTIVE,
+                Tenant.SubscriptionStatus.TRIAL,
+            ]
+        )
+
+        for tenant in active_tenants:
+            connection.set_schema(tenant.schema_name)
+            try:
+                # Try to find patient by login_id, hospital_number, or mrn
+                patient = Patient.objects.filter(login_id=identifier).first()
+
+                if not patient:
+                    patient = Patient.objects.filter(hospital_number=identifier).first()
+
+                if not patient:
+                    patient = Patient.objects.filter(mrn=identifier).first()
+
+                if not patient:
+                    continue
+
+                password_matches = False
+                if patient.password:
+                    password_matches = patient.check_password(password) or password == patient.hospital_number or password == patient.login_id
+                else:
+                    password_matches = (
+                        password == '' or
+                        password == patient.mrn or
+                        password == patient.hospital_number or
+                        password == patient.login_id
+                    )
+
+                if password_matches:
+                    connection.set_schema('public')
+                    refresh = RefreshToken()
+                    refresh['patient_id'] = patient.id
+                    refresh['tenant_id'] = str(tenant.public_id)
+                    refresh['login_id'] = patient.login_id
+                    refresh['is_patient'] = True
+
+                    logger.info(f"[AUTH] Patient authenticated: patient_id={patient.id}, tenant={tenant.name}")
+                    return Response({
+                        'message': 'Patient login successful',
+                        'patient': {
+                            'id': patient.id,
+                            'login_id': patient.login_id,
+                            'hospital_number': patient.hospital_number,
+                            'mrn': patient.mrn,
+                            'full_name': patient.get_full_name(),
+                            'tenant': tenant.name,
+                        },
+                        'tokens': {
+                            'access_token': str(refresh.access_token),
+                            'refresh_token': str(refresh),
+                        },
+                        'is_patient': True,
+                    })
+            finally:
+                connection.set_schema('public')
+
+        return None
+
     def _resolve_tenant_from_identifier(self, user_id):
         """Try to infer tenant from employee_id prefix (format: TENANT-ROLE-XXXX)."""
         if not user_id or '-' not in str(user_id):
@@ -822,8 +905,9 @@ class AuthenticationView(APIView):
                     _set_auth_cookies(response, access_token, refresh_token)
         return super().finalize_response(request, response, *args, **kwargs)
 
+
     def authenticate_global_user(self, data, request):
-        """Authenticate global user."""
+        """Authenticate global user (super admin, support staff, etc)."""
         serializer = LoginSerializer(data=data)
         
         if serializer.is_valid():

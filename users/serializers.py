@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
+from django.db.models import Q
 from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_email
@@ -104,8 +105,15 @@ class LoginSerializer(serializers.Serializer):
         if not username:
             raise serializers.ValidationError({"user_id": "This field is required."})
         
-        # Authenticate user
-        user = authenticate(username=username, password=password)
+        # Django's default ModelBackend only looks up username. Global users
+        # also log in with employee_id and email, so resolve the identifier
+        # explicitly before checking the password.
+        user = GlobalUser.objects.filter(
+            Q(username=username) | Q(email=username) | Q(employee_id=username),
+            is_active=True,
+        ).first()
+        if user and not user.check_password(password):
+            user = None
         
         if not user:
             raise serializers.ValidationError("Invalid user ID, username, employee ID, or password.")
