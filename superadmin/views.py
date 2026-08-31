@@ -584,8 +584,9 @@ class TenantAdminCreateView(APIView):
                 logger.info(f'📧 Sending welcome email synchronously to {admin_user.email} for tenant {tenant.name}')
                 try:
                     import datetime
+                    from django.core.mail import send_mail
                     from django.template.loader import render_to_string
-                    from tenants.communication import build_email_context, send_tenant_email
+                    from tenants.communication import build_email_context
                     login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
                     base_context = {
                         'admin_name': admin_user.get_full_name() or admin_user.username,
@@ -603,11 +604,11 @@ class TenantAdminCreateView(APIView):
                     logger.info(f'   Rendering email templates...')
                     html_message = render_to_string('users/tenant_welcome_email.html', context)
                     plain_message = render_to_string('users/tenant_welcome_email.txt', context)
-                    logger.info(f'   Sending email via {settings.EMAIL_BACKEND} to {admin_user.email}')
-                    send_tenant_email(
-                        tenant=tenant,
+                    logger.info(f'   Sending email via {settings.EMAIL_BACKEND} from global email to {admin_user.email}')
+                    send_mail(
                         subject=subject,
                         message=plain_message,
+                        from_email=settings.DEFAULT_FROM_EMAIL,
                         recipient_list=[admin_user.email],
                         html_message=html_message,
                         fail_silently=False,

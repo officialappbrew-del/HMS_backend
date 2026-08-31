@@ -2,6 +2,7 @@ import logging
 from datetime import date, timedelta
 from django.utils import timezone
 from django.db.models import Q
+from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
 from celery import shared_task
@@ -121,19 +122,19 @@ def _send_expiry_email(tenant, days_remaining, notification_type):
     }
 
     try:
-        from tenants.communication import build_email_context, send_tenant_email
+        from tenants.communication import build_email_context
         context = build_email_context(tenant, extra=context)
         subject = f"{tenant.name} - Subscription Expiry Notice"
     except Exception:
-        from tenants.communication import send_tenant_email
+        pass
 
     html_message = render_to_string('emails/subscription_expiry.html', context)
     plain_message = render_to_string('emails/subscription_expiry.txt', context)
 
-    send_tenant_email(
-        tenant=tenant,
+    send_mail(
         subject=subject,
         message=plain_message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[tenant.billing_email or tenant.email],
         html_message=html_message,
         fail_silently=False,

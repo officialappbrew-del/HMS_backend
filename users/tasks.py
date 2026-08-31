@@ -37,7 +37,7 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
     """
     Send password reset email in background.
     Retries up to 3 times with 60 seconds delay between retries.
-    Uses per-tenant email identity when available.
+    Uses per-tenant email identity when available, falls back to global settings.
     """
     try:
         from django.conf import settings
@@ -58,43 +58,51 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
         }
 
         tenant = _resolve_tenant_from_context(recipient_email, user_name)
-        from_email = settings.DEFAULT_FROM_EMAIL
-        from_name = None
-
-        # Merge per-tenant brand context (name + logo) so the email renders
-        # with the hospital's branding, not the global brand.
-        context = dict(base_context)
-        if tenant:
-            try:
-                from tenants.communication import build_email_context, resolve_email_identity
-                context = build_email_context(tenant, extra=base_context)
-                identity = resolve_email_identity(tenant)
-                from_email = identity['from_email'] or from_email
-                from_name = identity['from_name'] or None
-                if not from_name and tenant.name:
-                    from_name = tenant.name
-                subject = f'{tenant.name} - Password Reset Request'
-            except Exception:
-                pass
-
-        html_message = render_to_string('users/password_reset_email.html', context)
-        plain_message = render_to_string('users/password_reset_email.txt', context)
-
-        if from_name:
-            from_email = f'{from_name} <{from_email}>'
+        html_message = render_to_string('users/password_reset_email.html', base_context)
+        plain_message = render_to_string('users/password_reset_email.txt', base_context)
 
         logger.info(f'   Subject: {subject}')
         logger.info(f'   To: {recipient_email}')
-        logger.info(f'   From: {from_email}')
 
-        result = send_mail(
-            subject=subject,
-            message=plain_message,
-            from_email=from_email,
-            recipient_list=[recipient_email],
-            html_message=html_message,
-            fail_silently=False,
-        )
+        if tenant:
+            # Use tenant-specific email configuration when tenant is available
+            try:
+                from tenants.communication import build_email_context, send_tenant_email
+                context = build_email_context(tenant, extra=base_context)
+                html_message = render_to_string('users/password_reset_email.html', context)
+                plain_message = render_to_string('users/password_reset_email.txt', context)
+                subject = f'{tenant.name} - Password Reset Request'
+                logger.info(f'   Using tenant email configuration for {tenant.name}')
+                result = send_tenant_email(
+                    tenant=tenant,
+                    subject=subject,
+                    message=plain_message,
+                    recipient_list=[recipient_email],
+                    html_message=html_message,
+                    fail_silently=False,
+                )
+            except Exception as exc:
+                logger.warning(f'   Failed to use tenant configuration, falling back to global settings: {exc}')
+                # Fall through to global send_mail below
+                result = send_mail(
+                    subject=subject,
+                    message=plain_message,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[recipient_email],
+                    html_message=html_message,
+                    fail_silently=False,
+                )
+        else:
+            # No tenant context; use global settings
+            logger.info(f'   No tenant found, using global email settings')
+            result = send_mail(
+                subject=subject,
+                message=plain_message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[recipient_email],
+                html_message=html_message,
+                fail_silently=False,
+            )
 
         logger.info(f'✅ Password reset email sent successfully to {recipient_email}')
         logger.info(f'   Send result: {result} message(s) sent')
@@ -114,9 +122,10 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
 
 
 def send_tenant_welcome_email(recipient_email, admin_name, tenant_name, temporary_password, login_url, user_id=None):
-    """Send tenant welcome email with first-login credentials."""
+    """Send tenant welcome email with first-login credentials using tenant email configuration."""
     import datetime
     from tenants.models import TenantUser
+    from tenants.communication import send_tenant_email
 
     subject = f'Welcome to {tenant_name} - Your Account Has Been Created'
     base_context = {
@@ -129,33 +138,38 @@ def send_tenant_welcome_email(recipient_email, admin_name, tenant_name, temporar
         'year': datetime.date.today().year,
         'app_name': settings.APP_NAME,
     }
-    tenant = TenantUser.objects.filter(id=user_id).values_list('tenant', flat=True).first() if user_id else None
+    
     tenant_instance = None
-    if tenant:
-        tenant_instance = TenantUser.objects.select_related('tenant').get(id=user_id).tenant
+    if user_id:
+        tenant_instance = TenantUser.objects.select_related('tenant').filter(id=user_id).values_list('tenant', flat=True).first()
+        if tenant_instance:
+            from tenants.models import Tenant
+            tenant_instance = Tenant.objects.get(pk=tenant_instance)
 
-    from_email = settings.DEFAULT_FROM_EMAIL
-    from_name = None
-    context = dict(base_context)
     if tenant_instance:
-        from tenants.communication import build_email_context, resolve_email_identity
+        from tenants.communication import build_email_context
         context = build_email_context(tenant_instance, extra=base_context)
-        identity = resolve_email_identity(tenant_instance)
-        from_email = identity['from_email'] or from_email
-        from_name = identity['from_name'] or tenant_instance.name
         subject = f'Welcome to {tenant_instance.name} - Account Created'
-
-    if from_name:
-        from_email = f'{from_name} <{from_email}>'
-
-    result = send_mail(
-        subject=subject,
-        message=render_to_string('users/tenant_welcome_email.txt', context),
-        from_email=from_email,
-        recipient_list=[recipient_email],
-        html_message=render_to_string('users/tenant_welcome_email.html', context),
-        fail_silently=False,
-    )
+        result = send_tenant_email(
+            tenant=tenant_instance,
+            subject=subject,
+            message=render_to_string('users/tenant_welcome_email.txt', context),
+            recipient_list=[recipient_email],
+            html_message=render_to_string('users/tenant_welcome_email.html', context),
+            fail_silently=False,
+        )
+    else:
+        # Fall back to global settings if tenant not available
+        context = dict(base_context)
+        result = send_mail(
+            subject=subject,
+            message=render_to_string('users/tenant_welcome_email.txt', context),
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[recipient_email],
+            html_message=render_to_string('users/tenant_welcome_email.html', context),
+            fail_silently=False,
+        )
+    
     return {'status': 'success', 'email': recipient_email, 'messages_sent': result}
 
 
