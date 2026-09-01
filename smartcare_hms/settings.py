@@ -665,6 +665,9 @@ SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 # In DEBUG mode (local development), run tasks eagerly (synchronously) to avoid
 # needing a separate Celery worker and Redis broker. This makes debugging easier.
 # In production, tasks are queued asynchronously via Redis/Celery.
+# IMPORTANT: Celery reads CELERY_BROKER_URL, not REDIS_URL directly. We therefore
+# use REDIS_URL as the default source but make the broker URL explicit so Render
+# does not silently fall back to localhost:6379.
 if DEBUG:
     CELERY_TASK_ALWAYS_EAGER = True  # Execute tasks immediately in dev
     CELERY_TASK_EAGER_PROPAGATES = True  # Propagate exceptions from eager tasks
@@ -674,12 +677,12 @@ else:
     CELERY_TASK_ALWAYS_EAGER = False
     CELERY_BROKER_URL = config(
         'CELERY_BROKER_URL',
-        default=(_REDIS_URL or 'redis://localhost:6379/0'),
+        default=_REDIS_URL or 'redis://localhost:6379/0',
     )
     # Use Redis for the result backend when available to reduce DB writes
     CELERY_RESULT_BACKEND = config(
         'CELERY_RESULT_BACKEND',
-        default=(_REDIS_URL if _REDIS_URL else 'django-db'),
+        default=_REDIS_URL or 'django-db',
     )
 
 CELERY_ACCEPT_CONTENT = ['json']
