@@ -554,7 +554,17 @@ if (not DEBUG) and not _REDIS_URL:
         '🚨 REDIS_URL is required in production for consistent rate limiting, '
         'sessions, and caching. Set REDIS_URL before starting the server.'
     )
-if _REDIS_URL:
+
+# In DEBUG mode (local development), always use in-memory cache to avoid Redis dependency.
+# In production, use Redis if available for consistency across workers.
+if DEBUG:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'smartcare-dev-cache',
+        }
+    }
+elif _REDIS_URL:
     CACHES = {
         'default': {
             'BACKEND': 'django_redis.cache.RedisCache',
@@ -578,8 +588,11 @@ else:
 # SESSION SETTINGS
 # ============================================
 # Use Redis/cache-backed sessions when available to avoid a DB round-trip per
-# request and to share sessions across workers.
-if _REDIS_URL:
+# request and to share sessions across workers. In DEBUG mode, use database
+# sessions (simpler, no Redis dependency).
+if DEBUG:
+    SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+elif _REDIS_URL:
     SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 else:
     SESSION_ENGINE = 'django.contrib.sessions.backends.db'
@@ -649,18 +662,26 @@ SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 # ============================================
 # CELERY SETTINGS
 # ============================================
-CELERY_TASK_ALWAYS_EAGER = False
-CELERY_BROKER_URL = config(
-    'CELERY_BROKER_URL',
-    default=(_REDIS_URL or 'redis://localhost:6379/0'),
-)
+# In DEBUG mode (local development), run tasks eagerly (synchronously) to avoid
+# needing a separate Celery worker and Redis broker. This makes debugging easier.
+# In production, tasks are queued asynchronously via Redis/Celery.
+if DEBUG:
+    CELERY_TASK_ALWAYS_EAGER = True  # Execute tasks immediately in dev
+    CELERY_TASK_EAGER_PROPAGATES = True  # Propagate exceptions from eager tasks
+    CELERY_BROKER_URL = 'memory://'  # In-memory broker (won't actually be used in eager mode)
+    CELERY_RESULT_BACKEND = 'cache+memory://'  # In-memory result backend
+else:
+    CELERY_TASK_ALWAYS_EAGER = False
+    CELERY_BROKER_URL = config(
+        'CELERY_BROKER_URL',
+        default=(_REDIS_URL or 'redis://localhost:6379/0'),
+    )
+    # Use Redis for the result backend when available to reduce DB writes
+    CELERY_RESULT_BACKEND = config(
+        'CELERY_RESULT_BACKEND',
+        default=(_REDIS_URL if _REDIS_URL else 'django-db'),
+    )
 
-# Use Redis for the result backend when available to reduce DB writes; fall back
-# to django-db only if explicitly configured (or in dev).
-CELERY_RESULT_BACKEND = config(
-    'CELERY_RESULT_BACKEND',
-    default=(_REDIS_URL if _REDIS_URL else 'django-db'),
-)
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'

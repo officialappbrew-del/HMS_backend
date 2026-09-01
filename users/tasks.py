@@ -1,9 +1,11 @@
 import logging
+import threading
 from urllib.parse import quote
 from celery import shared_task
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
+from django.utils import timezone
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,120 @@ def send_password_reset_email_task(self, recipient_email, reset_token, user_name
         logger.exception(f'   Error: {exc}')
         # Retry task
         raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def send_login_notification_email_task(
+    self,
+    recipient_email,
+    user_name=None,
+    tenant_id=None,
+    ip_address=None,
+    user_agent=None,
+    is_global_user=False,
+):
+    """Notify an account owner about a successful login without blocking auth."""
+    if not recipient_email:
+        return {'status': 'skipped', 'reason': 'missing email'}
+
+    try:
+        from tenants.communication import build_email_context, send_tenant_email
+        from tenants.models import Tenant
+
+        tenant = None
+        if tenant_id:
+            tenant = Tenant.objects.filter(public_id=tenant_id).first()
+            if tenant is None and str(tenant_id).isdigit():
+                tenant = Tenant.objects.filter(id=int(tenant_id)).first()
+
+        base_context = {
+            'user_name': user_name or 'User',
+            'login_time': timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M %Z'),
+            'ip_address': ip_address or 'Unavailable',
+            'device': (user_agent or 'Unknown device')[:500],
+            'app_name': settings.APP_NAME,
+            'tenant_name': getattr(tenant, 'name', None) or '',
+        }
+
+        if is_global_user:
+            send_mail(
+                subject='New Sign-in to Your Account',
+                message=render_to_string('users/login_notification_email.txt', base_context),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[recipient_email],
+                html_message=render_to_string('users/login_notification_email.html', base_context),
+                fail_silently=False,
+            )
+            logger.info('Login notification email sent to %s using global credentials', recipient_email)
+            return {'status': 'success', 'email': recipient_email, 'tenant': 'global'}
+
+        if tenant:
+            context = build_email_context(tenant, extra=base_context)
+            subject = f'{tenant.name} - New Sign-in to Your Account'
+            try:
+                send_tenant_email(
+                    tenant=tenant,
+                    subject=subject,
+                    message=render_to_string('users/login_notification_email.txt', context),
+                    recipient_list=[recipient_email],
+                    html_message=render_to_string('users/login_notification_email.html', context),
+                    fail_silently=False,
+                )
+            except Exception:
+                logger.warning(
+                    'Login notification skipped for tenant %s because tenant email credentials are not configured or delivery failed.',
+                    tenant.name,
+                    exc_info=True,
+                )
+                return {'status': 'skipped', 'email': recipient_email, 'reason': 'tenant_email_not_configured'}
+            logger.info('Login notification email sent to %s using tenant credentials for %s', recipient_email, tenant.name)
+            return {'status': 'success', 'email': recipient_email, 'tenant': tenant.name}
+
+        logger.warning('Login notification skipped: no tenant context for %s; tenant-scoped notification only.', recipient_email)
+        return {'status': 'skipped', 'email': recipient_email, 'reason': 'no_tenant_context'}
+    except Exception as exc:
+        logger.exception('Failed to send login notification email to %s', recipient_email)
+        raise self.retry(exc=exc)
+
+
+def _queue_login_notification_async(recipient_email, user_name=None, tenant_id=None,
+                                   ip_address=None, user_agent=None, is_global_user=False):
+    """Best-effort worker-thread enqueue; avoids blocking the login response."""
+    try:
+        send_login_notification_email_task.apply_async(
+            kwargs={
+                'recipient_email': recipient_email,
+                'user_name': user_name,
+                'tenant_id': str(tenant_id) if tenant_id else None,
+                'ip_address': ip_address,
+                'user_agent': user_agent,
+                'is_global_user': is_global_user,
+            },
+            ignore_result=True,
+        )
+    except Exception:
+        logger.exception('Unable to queue login notification email to %s', recipient_email)
+
+
+def queue_login_notification(recipient_email, user_name=None, tenant_id=None,
+                             ip_address=None, user_agent=None, is_global_user=False):
+    """Queue a login notification without delaying the authenticated response."""
+    if not recipient_email:
+        return
+
+    thread = threading.Thread(
+        target=_queue_login_notification_async,
+        args=(recipient_email,),
+        kwargs={
+            'user_name': user_name,
+            'tenant_id': tenant_id,
+            'ip_address': ip_address,
+            'user_agent': user_agent,
+            'is_global_user': is_global_user,
+        },
+        daemon=True,
+    )
+    thread.start()
 
 
 def send_tenant_welcome_email(recipient_email, admin_name, tenant_name, temporary_password, login_url, user_id=None):

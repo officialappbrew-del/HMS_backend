@@ -39,6 +39,7 @@ from core.models import AuditLog
 from tenants.models import Tenant, TenantUser
 from patients.models import Patient
 from patients.serializers import PatientLoginSerializer
+from .tasks import queue_login_notification
 
 
 def _set_auth_cookies(response, access_token, refresh_token=None):
@@ -69,6 +70,31 @@ def _clear_auth_cookies(response):
     """Delete auth cookies on logout."""
     for key in ('access_token', 'refresh_token'):
         response.delete_cookie(key, path='/')
+
+
+def _get_client_ip(request):
+    """Return a valid IP address string for audit logging.
+
+    Some requests, especially local/test or proxied traffic, may not provide a
+    REMOTE_ADDR value. We must never persist NULL for a required GenericIPAddress
+    field, so we fall back to a safe loopback address instead of crashing.
+    """
+    value = getattr(request, 'user_ip', None)
+    if value:
+        return value
+
+    meta = getattr(request, 'META', {}) or {}
+    forwarded = meta.get('HTTP_X_FORWARDED_FOR', '')
+    if forwarded:
+        first_ip = forwarded.split(',')[0].strip()
+        if first_ip:
+            return first_ip
+
+    remote_addr = meta.get('REMOTE_ADDR') or meta.get('HTTP_X_REAL_IP')
+    if remote_addr:
+        return remote_addr
+
+    return '127.0.0.1'
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -584,6 +610,14 @@ class AuthenticationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            queue_login_notification(
+                recipient_email=user.email,
+                user_name=user.get_full_name(),
+                tenant_id=tenant.public_id,
+                ip_address=self.get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            )
+
             refresh = RefreshToken()
             refresh['user_id'] = user.id
             refresh['tenant_id'] = str(tenant.public_id)
@@ -680,7 +714,7 @@ class AuthenticationView(APIView):
                 if not user:
                     user = TenantUser.objects.filter(is_active=True, email=user_id).first()
                 if user and user.check_password(password):
-                    return self._build_tenant_login_response(tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email')
+                    return self._build_tenant_login_response(tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email', request)
             finally:
                 connection.set_schema('public')
 
@@ -715,7 +749,7 @@ class AuthenticationView(APIView):
 
         if len(possible_matches) == 1:
             matched_tenant, matched_user, matched_by = possible_matches[0]
-            return self._build_tenant_login_response(matched_tenant, matched_user, matched_by)
+            return self._build_tenant_login_response(matched_tenant, matched_user, matched_by, request)
 
         if len(possible_matches) > 1:
             # Attempt to disambiguate by matching the request host to a tenant domain.
@@ -727,7 +761,7 @@ class AuthenticationView(APIView):
 
             for t, u, m in possible_matches:
                 if (t.domain or '').lower() == host and u and u.check_password(password):
-                    return self._build_tenant_login_response(t, u, m)
+                    return self._build_tenant_login_response(t, u, m, request)
 
             # Fallback: try Origin or Referer header to infer tenant domain
             origin = request.META.get('HTTP_ORIGIN') or request.META.get('HTTP_REFERER') or ''
@@ -737,7 +771,7 @@ class AuthenticationView(APIView):
                     o_host = (urlparse(origin).hostname or '').lower()
                     for t, u, m in possible_matches:
                         if (t.domain or '').lower() == o_host and u and u.check_password(password):
-                            return self._build_tenant_login_response(t, u, m)
+                            return self._build_tenant_login_response(t, u, m, request)
                 except Exception:
                     pass
 
@@ -815,6 +849,13 @@ class AuthenticationView(APIView):
 
                 if password_matches:
                     connection.set_schema('public')
+                    queue_login_notification(
+                        recipient_email=patient.email,
+                        user_name=patient.get_full_name(),
+                        tenant_id=tenant.public_id,
+                        ip_address=self.get_client_ip(request),
+                        user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                    )
                     refresh = RefreshToken()
                     refresh['patient_id'] = patient.id
                     refresh['tenant_id'] = str(tenant.public_id)
@@ -873,7 +914,14 @@ class AuthenticationView(APIView):
 
         return Tenant.objects.filter(code__istartswith=tenant_prefix).first()
 
-    def _build_tenant_login_response(self, tenant, user, matched_by):
+    def _build_tenant_login_response(self, tenant, user, matched_by, request=None):
+        queue_login_notification(
+            recipient_email=user.email,
+            user_name=user.get_full_name(),
+            tenant_id=tenant.public_id,
+            ip_address=self.get_client_ip(request) if request else None,
+            user_agent=request.META.get('HTTP_USER_AGENT', '') if request else None,
+        )
         refresh = RefreshToken()
         refresh['user_id'] = user.id
         refresh['tenant_id'] = str(tenant.public_id)
@@ -992,6 +1040,14 @@ class AuthenticationView(APIView):
             description='Login successful',
             ip_address=self.get_client_ip(request),
             user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+
+        queue_login_notification(
+            recipient_email=user.email,
+            user_name=user.get_full_name(),
+            ip_address=self.get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            is_global_user=True,
         )
         
         return Response({
@@ -1199,6 +1255,14 @@ class TwoFAView(APIView):
                 ip_address=self.get_client_ip(request),
                 user_agent=request.META.get('HTTP_USER_AGENT', ''),
                 metadata={'method': serializer.validated_data['method']}
+            )
+
+            queue_login_notification(
+                recipient_email=user.email,
+                user_name=user.get_full_name(),
+                ip_address=self.get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', ''),
+                is_global_user=True,
             )
             
             return Response({
@@ -1754,7 +1818,7 @@ def logout_view(request):
         SecurityEvent.objects.create(
             user=user,
             event_type=SecurityEvent.EventType.LOGOUT,
-            ip_address=getattr(request, 'user_ip', None),
+            ip_address=_get_client_ip(request),
             user_agent=request.META.get('HTTP_USER_AGENT', ''),
         )
 

@@ -1,0 +1,9 @@
+Hi {{ user_name }},
+
+Your {{ tenant_name|default:'your account' }} account was just used to sign in.
+
+Time: {{ login_time }}
+IP address: {{ ip_address }}
+Device: {{ device }}
+
+If you did not sign in, change your password and contact the {{ tenant_name|default:'administrator' }} security team immediately.

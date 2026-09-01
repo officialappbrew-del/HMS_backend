@@ -17,37 +17,17 @@ def get_communication_profile(tenant):
     return CommunicationProfile.objects.create(tenant=tenant)
 
 
-class TenantEmailConfigurationError(Exception):
-    """Raised when a tenant has not configured an email sending identity."""
-
-
-def resolve_email_identity(tenant, allow_global_fallback=True):
+def resolve_email_identity(tenant):
     """Resolve email sending identity for a tenant.
 
     Returns a dict with keys:
       from_email, from_name, reply_to, host, port, username, password, use_tls, provider
 
-    Falls back to global Django settings when allowed and the tenant has no
-    profile values. Appointment notifications disable this fallback.
+    Falls back to global Django settings when the tenant has no profile or values.
     """
     from django.conf import settings as django_settings
 
     profile = get_communication_profile(tenant)
-    password = profile.get_decrypted_email_password()
-
-    if not allow_global_fallback:
-        missing_fields = [
-            field for field, value in {
-                'email_from': profile.email_from,
-                'email_host': profile.email_host,
-                'email_username': profile.email_username,
-                'email_password': password,
-            }.items() if not value
-        ]
-        if not profile.is_active or not profile.email_enabled or missing_fields:
-            raise TenantEmailConfigurationError(
-                'The tenant has not configured complete email credentials.'
-            )
 
     return {
         'from_email': profile.email_from or getattr(django_settings, 'DEFAULT_FROM_EMAIL', ''),
@@ -56,7 +36,7 @@ def resolve_email_identity(tenant, allow_global_fallback=True):
         'host': profile.email_host or getattr(django_settings, 'EMAIL_HOST', ''),
         'port': profile.email_port or getattr(django_settings, 'EMAIL_PORT', 587),
         'username': profile.email_username or getattr(django_settings, 'EMAIL_HOST_USER', ''),
-        'password': password or getattr(django_settings, 'EMAIL_HOST_PASSWORD', ''),
+        'password': profile.get_decrypted_email_password() or getattr(django_settings, 'EMAIL_HOST_PASSWORD', ''),
         'use_tls': profile.email_use_tls if profile.email_host else getattr(django_settings, 'EMAIL_USE_TLS', True),
         'provider': profile.email_provider or 'default',
         'verified_domain': profile.verified_domain or '',
@@ -150,14 +130,13 @@ def build_email_context(tenant, extra=None, request=None):
     return context
 
 
-def send_tenant_email(tenant, subject, message, recipient_list, html_message=None,
-                      fail_silently=False, allow_global_fallback=True):
+def send_tenant_email(tenant, subject, message, recipient_list, html_message=None, fail_silently=False):
     """
     Send an email using tenant-specific email configuration.
     
     This function ensures that all tenant-related emails use the tenant's 
-    configured email settings instead of global defaults. Callers can disable
-    global fallback when a tenant-specific sender is mandatory.
+    configured email settings instead of global defaults. Falls back to 
+    Django's default email backend if tenant configuration is incomplete.
     
     Args:
         tenant: The Tenant instance for which to send the email
@@ -179,10 +158,10 @@ def send_tenant_email(tenant, subject, message, recipient_list, html_message=Non
         ...     html_message='<p>Your appointment is scheduled for...</p>',
         ... )
     """
-    from django.core.mail import EmailMultiAlternatives, get_connection
+    from django.core.mail import send_mail
     
     # Resolve tenant email identity
-    identity = resolve_email_identity(tenant, allow_global_fallback=allow_global_fallback)
+    identity = resolve_email_identity(tenant)
     from_email = identity.get('from_email') or ''
     from_name = identity.get('from_name') or tenant.name
     
@@ -202,29 +181,13 @@ def send_tenant_email(tenant, subject, message, recipient_list, html_message=Non
             raise ValueError('recipient_list and from_email are required')
         return 0
     
-    # A tenant host must use its own SMTP connection; Django's global backend
-    # only changes the sender address and would still authenticate globally.
-    connection_kwargs = {
-        'host': identity.get('host'),
-        'port': identity.get('port'),
-        'username': identity.get('username'),
-        'password': identity.get('password'),
-        'use_tls': identity.get('use_tls'),
-    }
-    connection = get_connection(
-        'django.core.mail.backends.smtp.EmailBackend',
-        fail_silently=fail_silently,
-        **connection_kwargs,
-    )
-    email = EmailMultiAlternatives(
+    # Send using Django's send_mail with tenant identity
+    return send_mail(
         subject=subject,
-        body=message,
+        message=message,
         from_email=from_email_full,
-        to=recipient_list,
-        reply_to=[identity['reply_to']] if identity.get('reply_to') else None,
-        connection=connection,
+        recipient_list=recipient_list,
+        html_message=html_message,
+        fail_silently=fail_silently,
     )
-    if html_message:
-        email.attach_alternative(html_message, 'text/html')
-    return email.send(fail_silently=fail_silently)
 

@@ -20,10 +20,44 @@ from unittest import mock
 import jwt
 
 from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.test import APIRequestFactory
 
 from .authentication import JWTAuthentication
+from .models import SecurityEvent
+from .views import logout_view
 
 User = get_user_model()
+
+
+class LogoutSecurityTests(TestCase):
+    """Logout should never crash when IP metadata is missing."""
+
+    def test_logout_falls_back_when_ip_is_missing(self):
+        user = User.objects.create_user(
+            username='logout-ip-user',
+            email='logout-ip@example.com',
+            password='StrongPass123!',
+        )
+        factory = APIRequestFactory()
+        request = factory.post('/api/v1/auth/logout/', {})
+        request.user = user
+        request.META['REMOTE_ADDR'] = ''
+        request.user_ip = None
+
+        response = logout_view(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            SecurityEvent.objects.filter(
+                user=user,
+                event_type=SecurityEvent.EventType.LOGOUT,
+            ).exists()
+        )
+        event = SecurityEvent.objects.filter(
+            user=user,
+            event_type=SecurityEvent.EventType.LOGOUT,
+        ).latest('created_at')
+        self.assertTrue(event.ip_address)
 
 
 @override_settings(

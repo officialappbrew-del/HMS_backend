@@ -33,7 +33,7 @@ from .serializers import (
 from tenants.models import TenantUser, Department
 from core.views import TenantScopedModelViewSet
 from users.models import PasswordResetToken
-from users.tasks import send_password_reset_email_task
+from users.tasks import send_password_reset_email_task, queue_login_notification
 from core.models import AuditLog
 from .services import merge_patients, unmerge_patient
 
@@ -99,7 +99,6 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
         try:
             # Use tenant-specific email configuration
             from tenants.communication import (
-                TenantEmailConfigurationError,
                 build_email_context,
                 send_tenant_email,
             )
@@ -119,17 +118,9 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
                 recipient_list=[patient.email],
                 html_message=render_to_string('patients/appointment_reminder_email.html', email_context),
                 fail_silently=False,
-                allow_global_fallback=False,
             )
             sent_channels.append('email')
             logger.info('Appointment reminder email sent to patient %s (%s)', patient.id, patient.email)
-        except TenantEmailConfigurationError:
-            logger.warning('Tenant email credentials are not configured for appointment %s', appointment.id)
-            return {
-                'status': 'partial',
-                'channels': sent_channels,
-                'error': 'Appointment saved, but this tenant has not configured its email credentials. The confirmation email was not sent.',
-            }
         except Exception as exc:
             logger.error('Failed to send appointment reminder email to patient %s: %s', patient.id, exc)
             return {
@@ -158,6 +149,13 @@ def patient_login(request):
     serializer = PatientLoginSerializer(data=request.data)
     if serializer.is_valid():
         patient = serializer.validated_data['patient']
+        queue_login_notification(
+            recipient_email=patient.email,
+            user_name=patient.get_full_name(),
+            tenant_id=patient.tenant.public_id,
+            ip_address=request.META.get('REMOTE_ADDR'),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
         refresh = RefreshToken()
         refresh['patient_id'] = patient.id
         refresh['tenant_id'] = str(patient.tenant.public_id)

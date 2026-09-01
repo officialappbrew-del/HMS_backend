@@ -1,0 +1,21 @@
+{% extends "emails/base_email.html" %}
+
+{% block title %}New sign-in to your account{% endblock %}
+{% block subtitle %}Security notification{% endblock %}
+
+{% block body %}
+<p style="margin: 0 0 12px; font-size: 16px; color:#111827; font-weight: 600;">Hi {{ user_name }},</p>
+<p style="margin: 0 0 16px; font-size: 14px; color:#374151; line-height: 1.6;">
+  Your {{ tenant_name|default:'your account' }} account was just used to sign in.
+</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin: 18px 0; background:#f8fafc; border:1px solid #e5e7eb;">
+  <tr><td style="padding: 14px 16px; font-size: 14px; color:#374151; line-height:1.8;">
+    <strong>Time:</strong> {{ login_time }}<br />
+    <strong>IP address:</strong> {{ ip_address }}<br />
+    <strong>Device:</strong> {{ device }}
+  </td></tr>
+</table>
+<p style="margin: 0; font-size: 13px; color:#6b7280; line-height:1.6;">
+  If you did not sign in, change your password and contact the {{ tenant_name|default:'administrator' }} security team immediately.
+</p>
+{% endblock %}
