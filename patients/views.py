@@ -476,7 +476,25 @@ class PatientViewSet(TenantScopedModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='refresh-password')
     def refresh_password(self, request, pk=None):
-        """Generate and save a fresh login password for a patient."""
+        """Generate and save a fresh login password for a patient.
+
+        Restricted to tenant root admins or global admins. This mirrors the staff
+        password refresh rules and prevents lower-privilege users from resetting
+        patient credentials.
+        """
+        user = request.user
+        tenant_user = getattr(user, 'tenant_user', None)
+        is_root_admin = bool(
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'role', None) in {'super_admin', 'system_admin'}
+            or getattr(tenant_user, 'is_root_admin', False)
+        )
+        if not is_root_admin:
+            return Response(
+                {'detail': 'Only the root admin can refresh a patient password.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         patient = self.get_object()
         generated_password = str(request.data.get('password') or '').strip() or self._generate_temp_password()
 

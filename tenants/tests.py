@@ -53,6 +53,44 @@ class TenantPasswordRefreshActionTests(TestCase):
         user.refresh_from_db()
         self.assertTrue(user.check_password(response.data['password']))
 
+    def test_non_root_admin_cannot_refresh_staff_password(self):
+        country = Country.objects.create(name='Nigeria', code='NG')
+        state = State.objects.create(name='Lagos', code='LA', country=country)
+        lga = LGA.objects.create(name='Ikeja', state=state)
+        facility_type = FacilityType.objects.create(name='Hospital', code='HOSP')
+        subscription_plan = SubscriptionPlan.objects.create(
+            name='Basic', code='basic', price_monthly=10000,
+            price_quarterly=25000, price_yearly=100000,
+        )
+        tenant = Tenant.objects.create(
+            name='Restricted Hospital', code='RH2', domain='restrictedhospital.localhost',
+            schema_name='tenant_restrictedhospital', email='info@restrictedhospital.com',
+            phone='08000000001', address='1 Test Street', city='Lagos',
+            state=state, lga=lga, country=country, facility_type=facility_type,
+            registration_number='REG-REF-002', subscription_plan=subscription_plan,
+        )
+        user = TenantUser.objects.create(
+            tenant=tenant, username='regular-user', email='regular@restrictedhospital.com',
+            password='old-password', first_name='Regular', last_name='User',
+            phone='08011111112', role='doctor',
+        )
+        user.set_password('OldPass123!')
+        user.save(update_fields=['password'])
+
+        request = APIRequestFactory().post(f'/api/v1/tenants/users/{user.id}/refresh-password/')
+        request.user = SimpleNamespace(
+            id=99,
+            is_authenticated=True, is_active=True, is_superuser=False, is_staff=True,
+            role='doctor', tenant_user=SimpleNamespace(tenant=tenant, is_root_admin=False),
+            get_full_name=lambda: 'Regular User',
+        )
+        request.META['HTTP_USER_AGENT'] = 'Mozilla/5.0 Test Browser'
+        request.META['REMOTE_ADDR'] = '127.0.0.1'
+
+        response = TenantUserViewSet.as_view({'post': 'refresh_password'})(request, pk=user.id)
+
+        self.assertEqual(response.status_code, 403)
+
 
 class TenantInvitationSerializerTests(TestCase):
     def test_invitation_serializer_allows_context_to_supply_tenant_and_invited_by(self):

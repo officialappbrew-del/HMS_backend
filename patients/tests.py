@@ -240,7 +240,7 @@ class PatientPasswordRefreshActionTests(TestCase):
         user = SimpleNamespace(
             id=1,
             is_authenticated=True, is_active=True, is_superuser=False, is_staff=True,
-            role='admin', tenant_user=SimpleNamespace(tenant=self.tenant),
+            role='admin', tenant_user=SimpleNamespace(tenant=self.tenant, is_root_admin=True),
             get_full_name=lambda: 'Refresh Admin',
         )
         request = APIRequestFactory().post(f'/api/v1/patients/patients/{self.patient.id}/refresh-password/')
@@ -255,6 +255,22 @@ class PatientPasswordRefreshActionTests(TestCase):
         self.assertNotEqual(response.data['password'], 'OldPass123!')
         self.patient.refresh_from_db()
         self.assertTrue(self.patient.check_password(response.data['password']))
+
+    def test_non_root_admin_cannot_refresh_patient_password(self):
+        user = SimpleNamespace(
+            id=2,
+            is_authenticated=True, is_active=True, is_superuser=False, is_staff=True,
+            role='doctor', tenant_user=SimpleNamespace(tenant=self.tenant, is_root_admin=False),
+            get_full_name=lambda: 'Doctor User',
+        )
+        request = APIRequestFactory().post(f'/api/v1/patients/patients/{self.patient.id}/refresh-password/')
+        request.user = user
+        request.META['HTTP_USER_AGENT'] = 'Mozilla/5.0 Test Browser'
+        request.META['REMOTE_ADDR'] = '127.0.0.1'
+
+        response = PatientViewSet.as_view({'post': 'refresh_password'})(request, pk=self.patient.id)
+
+        self.assertEqual(response.status_code, 403)
 
 
 class PatientPortalAuthTests(TestCase):
