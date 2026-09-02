@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 class RateLimitMiddleware(MiddlewareMixin):
     """Global middleware that rate-limits requests by IP/user across the API."""
 
-    WINDOW_SECONDS = config('RATE_LIMIT_WINDOW_SECONDS', default=60, cast=int)
-    MAX_REQUESTS = config('RATE_LIMIT_MAX_REQUESTS', default=200, cast=int)
+    WINDOW_SECONDS = config('RATE_LIMIT_WINDOW_SECONDS', default=100, cast=int)
+    MAX_REQUESTS = config('RATE_LIMIT_MAX_REQUESTS', default=1000, cast=int)
     EXEMPT_PATH_PREFIXES = tuple(
         prefix.strip() for prefix in config(
             'RATE_LIMIT_EXEMPT_PATH_PREFIXES',
@@ -80,7 +80,7 @@ class AuthenticationThrottle(SimpleRateThrottle):
     Rate is configured via the AUTH_THROTTLE_RATE environment variable.
     """
     scope = 'auth'
-    THROTTLE_RATES = {'auth': config('AUTH_THROTTLE_RATE', default='5/min')}
+    THROTTLE_RATES = {'auth': config('AUTH_THROTTLE_RATE', default='100/min')}
 
     def get_cache_key(self, request, view):
         ident = self.get_ident(request)
