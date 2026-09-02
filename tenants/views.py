@@ -1332,8 +1332,9 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             staff.id,
         )
         try:
-            send_tenant_welcome_email_task.delay(*email_args)
-            response.data['welcome_email_status'] = 'queued'
+            from smartcare_hms.email_delivery import dispatch_email_task
+            dispatch_email_task(send_tenant_welcome_email_task, args=email_args)
+            response.data['welcome_email_status'] = 'dispatched'
         except Exception:
             logger.exception('Unable to queue welcome email for tenant user %s; using direct send', staff.pk)
             try:
@@ -1791,10 +1792,15 @@ class TenantSettingViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         user = self.request.user
-        
-        if hasattr(user, 'tenant_user') and user.tenant_user:
+
+        try:
+            tenant_user = user.tenant_user
+        except TenantUser.DoesNotExist:
+            tenant_user = None
+
+        if tenant_user:
             # Tenant user can only see their tenant's settings
-            return TenantSetting.objects.filter(tenant=user.tenant_user.tenant)
+            return TenantSetting.objects.filter(tenant=tenant_user.tenant)
         
         # Global admin can see all settings
         if user.is_superuser or user.role in ['super_admin', 'system_admin']:
@@ -1815,11 +1821,16 @@ class TenantSettingViewSet(viewsets.ModelViewSet):
     def current(self, request):
         """Get or update current tenant's settings."""
         user = request.user
-        
-        if not hasattr(user, 'tenant_user') or not user.tenant_user:
+
+        try:
+            tenant_user = user.tenant_user
+        except TenantUser.DoesNotExist:
+            tenant_user = None
+
+        if not tenant_user:
             raise permissions.PermissionDenied("Not a tenant user")
         
-        settings = get_object_or_404(TenantSetting, tenant=user.tenant_user.tenant)
+        settings = get_object_or_404(TenantSetting, tenant=tenant_user.tenant)
 
         if request.method == 'GET':
             serializer = self.get_serializer(settings)

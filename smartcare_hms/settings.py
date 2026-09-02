@@ -648,6 +648,10 @@ ADMIN_ALLOWED_IPS = [
 # ============================================
 # EMAIL SETTINGS
 # ============================================
+EMAIL_DELIVERY_MODE = config('EMAIL_DELIVERY_MODE', default='async').lower()
+if EMAIL_DELIVERY_MODE not in {'async', 'sync'}:
+    raise ValueError("EMAIL_DELIVERY_MODE must be either 'async' or 'sync'.")
+
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
 EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)

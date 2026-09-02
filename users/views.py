@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import login, logout, authenticate
+from django.core.cache import cache
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -16,6 +17,7 @@ import pyotp
 import qrcode
 import base64
 import uuid
+import secrets
 import logging
 from io import BytesIO
 
@@ -40,6 +42,31 @@ from tenants.models import Tenant, TenantUser
 from patients.models import Patient
 from patients.serializers import PatientLoginSerializer
 from .tasks import queue_login_notification
+
+
+def _tenant_requires_2fa(tenant):
+    from tenants.models import TenantSetting
+    return TenantSetting.objects.filter(tenant=tenant, require_2fa=True).exists()
+
+
+def _start_tenant_email_2fa(tenant, user):
+    from tenants.communication import send_tenant_email
+
+    code = f'{secrets.randbelow(1000000):06d}'
+    challenge_id = uuid.uuid4().hex
+    cache.set(
+        f'tenant-2fa:{challenge_id}',
+        {'code': code, 'tenant_id': str(tenant.public_id), 'user_id': user.id},
+        600,
+    )
+    send_tenant_email(
+        tenant=tenant,
+        subject=f'{tenant.name} sign-in verification code',
+        message=f'Your sign-in verification code is {code}. It expires in 10 minutes.',
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+    return challenge_id
 
 
 def _set_auth_cookies(response, access_token, refresh_token=None):
@@ -610,6 +637,21 @@ class AuthenticationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            if _tenant_requires_2fa(tenant):
+                try:
+                    challenge_id = _start_tenant_email_2fa(tenant, user)
+                except Exception:
+                    logger.exception('Unable to send tenant 2FA code to %s', user.email)
+                    return Response({'error': 'Unable to send the verification code.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+                return Response({
+                    'requires_2fa': True,
+                    'tenant_2fa': True,
+                    'challenge_id': challenge_id,
+                    'tenant_id': str(tenant.public_id),
+                    'tenant_user_id': user.id,
+                    'message': 'A verification code was sent to your registered email address.',
+                })
+
             queue_login_notification(
                 recipient_email=user.email,
                 user_name=user.get_full_name(),
@@ -915,6 +957,21 @@ class AuthenticationView(APIView):
         return Tenant.objects.filter(code__istartswith=tenant_prefix).first()
 
     def _build_tenant_login_response(self, tenant, user, matched_by, request=None):
+        if _tenant_requires_2fa(tenant):
+            try:
+                challenge_id = _start_tenant_email_2fa(tenant, user)
+            except Exception:
+                logger.exception('Unable to send tenant 2FA code to %s', user.email)
+                return Response({'error': 'Unable to send the verification code.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return Response({
+                'requires_2fa': True,
+                'tenant_2fa': True,
+                'challenge_id': challenge_id,
+                'tenant_id': str(tenant.public_id),
+                'tenant_user_id': user.id,
+                'message': 'A verification code was sent to your registered email address.',
+            })
+
         queue_login_notification(
             recipient_email=user.email,
             user_name=user.get_full_name(),
@@ -1126,12 +1183,16 @@ class PasswordResetRequestView(APIView):
             from .tasks import send_password_reset_email_task
             logger.info('Sending password reset email synchronously to %s', recipient_email)
             try:
-                send_password_reset_email_task.run(
-                    recipient_email=recipient_email,
-                    reset_token=reset_token.token,
-                    user_name=getattr(user, 'get_full_name', lambda: None)(),
+                from smartcare_hms.email_delivery import dispatch_email_task
+                dispatch_email_task(
+                    send_password_reset_email_task,
+                    kwargs={
+                        'recipient_email': recipient_email,
+                        'reset_token': reset_token.token,
+                        'user_name': getattr(user, 'get_full_name', lambda: None)(),
+                    },
                 )
-                logger.info('Password reset email sent to %s', recipient_email)
+                logger.info('Password reset email dispatched to %s', recipient_email)
             except Exception:
                 logger.exception('Unable to send password reset email to %s', recipient_email)
         
@@ -1217,6 +1278,9 @@ class TwoFAView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
+        if request.data.get('tenant_2fa'):
+            return self.verify_tenant_email_code(request)
+
         logger.info(f"[2FA] Verification attempt for user_id={request.data.get('user_id')} code={request.data.get('code')}")
         serializer = TwoFASerializer(data=request.data)
         
@@ -1296,6 +1360,53 @@ class TwoFAView(APIView):
         
         logger.info(f"[2FA] FAILED for user_id={request.data.get('user_id')} errors={serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def verify_tenant_email_code(self, request):
+        from django.db import connection
+
+        challenge_id = request.data.get('challenge_id')
+        code = str(request.data.get('code') or '').strip()
+        challenge = cache.get(f'tenant-2fa:{challenge_id}') if challenge_id else None
+        if not challenge or not secrets.compare_digest(str(challenge.get('code')), code):
+            return Response({'error': 'Invalid or expired verification code.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        tenant = Tenant.objects.filter(public_id=challenge['tenant_id'], is_active=True).first()
+        if not tenant:
+            return Response({'error': 'Tenant not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        connection.set_schema(tenant.schema_name)
+        try:
+            user = TenantUser.objects.filter(id=challenge['user_id'], is_active=True).first()
+            if not user:
+                return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            refresh = RefreshToken()
+            refresh['user_id'] = user.id
+            refresh['tenant_id'] = str(tenant.public_id)
+            refresh['tenant_public_id'] = str(tenant.public_id)
+            refresh['tenant_domain'] = tenant.domain
+            refresh['is_tenant_user'] = True
+            refresh['two_fa_verified'] = True
+            refresh['token_version'] = user.token_version
+            cache.delete(f'tenant-2fa:{challenge_id}')
+            return Response({
+                'user': {
+                    'id': user.id,
+                    'user_id': user.employee_id or user.username,
+                    'username': user.username,
+                    'email': user.email,
+                    'role': user.role,
+                    'is_root_admin': user.is_root_admin,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'full_name': user.get_full_name(),
+                },
+                'tenant': {'public_id': str(tenant.public_id), 'name': tenant.name, 'domain': tenant.domain},
+                'access_token': str(refresh.access_token),
+                'refresh_token': str(refresh),
+                'is_tenant_user': True,
+            })
+        finally:
+            connection.set_schema('public')
     
     def get_client_ip(self, request):
         """Get client IP address."""

@@ -13,7 +13,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
 
 from .models import UserSession, SecurityEvent, RSAKey
-from tenants.models import Tenant, TenantUser
+from tenants.models import Tenant, TenantUser, TenantSetting
 from patients.models import Patient
 
 class RSAAuthentication(authentication.BaseAuthentication):
@@ -255,6 +255,8 @@ class JWTAuthentication(authentication.BaseAuthentication):
                 # linked via global_user does.)
                 _global_user = getattr(user, 'global_user', None)
                 if _global_user is not None and getattr(_global_user, 'two_fa_configured', False) and not payload.get('two_fa_verified', False):
+                    raise AuthenticationFailed('2FA verification required')
+                if TenantSetting.objects.filter(tenant=tenant, require_2fa=True).exists() and not payload.get('two_fa_verified', False):
                     raise AuthenticationFailed('2FA verification required')
 
                 return (user, payload)

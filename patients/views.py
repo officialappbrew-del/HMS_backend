@@ -34,6 +34,8 @@ from tenants.models import TenantUser, Department
 from core.views import TenantScopedModelViewSet
 from users.models import PasswordResetToken
 from users.tasks import send_password_reset_email_task, queue_login_notification
+from patients.tasks import send_appointment_email_task
+from smartcare_hms.email_delivery import dispatch_email_task
 from core.models import AuditLog
 from .services import merge_patients, unmerge_patient
 
@@ -87,7 +89,7 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
     if preferred_channel:
         normalized_channels = [preferred_channel.lower()] + [channel for channel in normalized_channels if channel != preferred_channel.lower()]
     if not normalized_channels:
-        normalized_channels = ['email'] if patient.email else ['sms']
+        normalized_channels = ['email'] if patient.email or getattr(appointment.doctor, 'email', None) else ['sms']
 
     sent_channels = []
     reminder_message = (
@@ -97,28 +99,7 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
 
     if 'email' in normalized_channels and patient.email:
         try:
-            # Use tenant-specific email configuration
-            from tenants.communication import (
-                build_email_context,
-                send_tenant_email,
-            )
-            email_context = build_email_context(tenant, extra={
-                'app_name': getattr(settings, 'APP_NAME', 'SmartCare HMS'),
-                'patient_name': patient.get_full_name(),
-                'appointment_date': appointment.scheduled_date,
-                'appointment_time': appointment.scheduled_time,
-                'appointment_type': appointment.get_appointment_type_display(),
-                'doctor_name': appointment.doctor.get_full_name() if appointment.doctor else '',
-                'reason': appointment.reason,
-            })
-            send_tenant_email(
-                tenant=tenant,
-                subject=f'{tenant.name} - Appointment Confirmation',
-                message=render_to_string('patients/appointment_reminder_email.txt', email_context),
-                recipient_list=[patient.email],
-                html_message=render_to_string('patients/appointment_reminder_email.html', email_context),
-                fail_silently=False,
-            )
+            dispatch_email_task(send_appointment_email_task, args=(appointment.id, 'patient'))
             sent_channels.append('email')
             logger.info('Appointment reminder email sent to patient %s (%s)', patient.id, patient.email)
         except Exception as exc:
@@ -127,6 +108,19 @@ def _dispatch_appointment_reminder(appointment, channels=None, preferred_channel
                 'status': 'partial',
                 'channels': sent_channels,
                 'error': 'Appointment saved, but the tenant confirmation email could not be sent. Please check the tenant email settings.',
+            }
+
+    doctor = getattr(appointment, 'doctor', None)
+    if doctor and doctor.email and 'email' in normalized_channels:
+        try:
+            dispatch_email_task(send_appointment_email_task, args=(appointment.id, 'doctor'))
+            logger.info('Appointment assignment email sent to doctor %s (%s)', doctor.id, doctor.email)
+        except Exception as exc:
+            logger.error('Failed to send appointment assignment email to doctor %s: %s', doctor.id, exc)
+            return {
+                'status': 'partial',
+                'channels': sent_channels,
+                'error': 'Appointment saved, but an appointment email could not be sent. Please check the tenant email settings.',
             }
 
     if ('sms' in normalized_channels or 'whatsapp' in normalized_channels) and patient.phone:
@@ -1197,16 +1191,19 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         appointment = serializer.instance
 
         reminder_result = {'status': 'skipped', 'channels': []}
-        if request.data.get('send_reminder', False):
+        send_reminder = request.data.get('send_reminder', True)
+        if send_reminder:
             reminder_result = _dispatch_appointment_reminder(
                 appointment,
                 channels=request.data.get('reminder_channels') or [],
                 preferred_channel=request.data.get('preferred_channel'),
             )
+        elif appointment.doctor and appointment.doctor.email:
+            self._notify_assigned_doctor(appointment)
 
         headers = self.get_success_headers(serializer.data)
         response_data = dict(serializer.data)
-        if request.data.get('send_reminder', False) and reminder_result.get('error'):
+        if send_reminder and reminder_result.get('error'):
             response_data['notification_warning'] = reminder_result['error']
         return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
 
@@ -1215,25 +1212,7 @@ class AppointmentViewSet(TenantScopedModelViewSet):
         if not doctor or not doctor.email:
             return
         try:
-            from tenants.communication import build_email_context, send_tenant_email
-            context = build_email_context(appointment.tenant, extra={
-                'app_name': getattr(settings, 'APP_NAME', 'SmartCare HMS'),
-                'doctor_name': doctor.get_full_name(),
-                'patient_name': appointment.patient.get_full_name(),
-                'appointment_date': appointment.scheduled_date,
-                'appointment_time': appointment.scheduled_time,
-                'appointment_type': appointment.get_appointment_type_display(),
-                'reason': appointment.reason,
-            })
-            send_tenant_email(
-                tenant=appointment.tenant,
-                subject=f'{appointment.tenant.name} - Appointment Assigned',
-                message=render_to_string('patients/appointment_assigned_email.txt', context),
-                recipient_list=[doctor.email],
-                html_message=render_to_string('patients/appointment_assigned_email.html', context),
-                fail_silently=True,
-                allow_global_fallback=False,
-            )
+            dispatch_email_task(send_appointment_email_task, args=(appointment.id, 'doctor'))
         except Exception:
             logger.exception('Failed to notify doctor %s for appointment %s', doctor.id, appointment.id)
 
@@ -1659,10 +1638,14 @@ class PatientPasswordResetRequestView(APIView):
 
             logger.info('Sending password reset email to patient %s (%s)', patient.id, recipient_email)
             try:
-                send_password_reset_email_task.run(
-                    recipient_email=recipient_email,
-                    reset_token=reset_token.token,
-                    user_name=patient.get_full_name(),
+                from smartcare_hms.email_delivery import dispatch_email_task
+                dispatch_email_task(
+                    send_password_reset_email_task,
+                    kwargs={
+                        'recipient_email': recipient_email,
+                        'reset_token': reset_token.token,
+                        'user_name': patient.get_full_name(),
+                    },
                 )
                 logger.info('Password reset email sent to patient %s', patient.id)
             except Exception:

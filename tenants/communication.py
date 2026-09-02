@@ -146,7 +146,7 @@ def send_tenant_email(
     available. If the tenant profile is incomplete and `allow_global_fallback` is
     true, it falls back to the global Django email defaults.
     """
-    from django.core.mail import send_mail
+    from django.core.mail import EmailMessage, get_connection
     from django.conf import settings as django_settings
 
     identity = resolve_email_identity(tenant)
@@ -168,12 +168,24 @@ def send_tenant_email(
             raise ValueError('recipient_list and from_email are required')
         return 0
 
-    return send_mail(
-        subject=subject,
-        message=message,
-        from_email=from_email_full,
-        recipient_list=recipient_list,
-        html_message=html_message,
+    connection = get_connection(
+        host=identity.get('host'),
+        port=identity.get('port'),
+        username=identity.get('username'),
+        password=identity.get('password'),
+        use_tls=identity.get('use_tls'),
+        use_ssl=getattr(django_settings, 'EMAIL_USE_SSL', False) if not identity.get('host') else False,
         fail_silently=fail_silently,
     )
+    email = EmailMessage(
+        subject=subject,
+        body=message,
+        from_email=from_email_full,
+        to=recipient_list,
+        connection=connection,
+    )
+    if html_message:
+        email.content_subtype = 'html'
+        email.body = html_message
+    return email.send(fail_silently=fail_silently)
 

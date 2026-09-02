@@ -607,8 +607,9 @@ class TenantAdminCreateView(APIView):
                         login_url,
                         admin_user.id,
                     )
-                    send_tenant_welcome_email_task.delay(*email_args)
-                    logger.info(f'✅ Tenant welcome email queued for {admin_user.email}')
+                    from smartcare_hms.email_delivery import dispatch_email_task
+                    dispatch_email_task(send_tenant_welcome_email_task, args=email_args)
+                    logger.info(f'✅ Tenant welcome email dispatched for {admin_user.email}')
                 except Exception as async_exc:
                     logger.warning(f'⚠️ Celery queue unavailable for welcome email to {admin_user.email}; falling back to direct send: {async_exc}')
                     try:

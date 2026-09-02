@@ -7,8 +7,14 @@ from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 from django.utils import timezone
 from django.conf import settings
+from smartcare_hms.email_delivery import is_async_email_delivery
 
 logger = logging.getLogger(__name__)
+
+
+def dispatch_email_task(task, args=(), kwargs=None):
+    from smartcare_hms.email_delivery import dispatch_email_task as dispatch
+    return dispatch(task, args=args, kwargs=kwargs)
 
 
 def _resolve_tenant_from_context(recipient_email, user_name=None):
@@ -222,8 +228,22 @@ def _queue_login_notification_async(recipient_email, user_name=None, tenant_id=N
 
 def queue_login_notification(recipient_email, user_name=None, tenant_id=None,
                              ip_address=None, user_agent=None, is_global_user=False):
-    """Queue a login notification without delaying the authenticated response."""
+    """Dispatch a login notification according to EMAIL_DELIVERY_MODE."""
     if not recipient_email:
+        return
+
+    if not is_async_email_delivery():
+        try:
+            send_login_notification_email_task.run(
+                recipient_email=recipient_email,
+                user_name=user_name,
+                tenant_id=str(tenant_id) if tenant_id else None,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                is_global_user=is_global_user,
+            )
+        except Exception as exc:
+            logger.warning('Login notification email failed in sync mode for %s: %s', recipient_email, exc)
         return
 
     thread = threading.Thread(
