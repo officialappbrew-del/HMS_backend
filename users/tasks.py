@@ -212,8 +212,12 @@ def _queue_login_notification_async(recipient_email, user_name=None, tenant_id=N
             },
             ignore_result=True,
         )
-    except Exception:
-        logger.exception('Unable to queue login notification email to %s', recipient_email)
+    except Exception as exc:
+        logger.warning(
+            'Login notification email was not queued for %s because the Celery broker is unavailable: %s',
+            recipient_email,
+            exc,
+        )
 
 
 def queue_login_notification(recipient_email, user_name=None, tenant_id=None,

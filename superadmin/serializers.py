@@ -9,7 +9,8 @@ class TenantAdminListSerializer(serializers.ModelSerializer):
     subscription_plan_name = serializers.CharField(
         source='subscription_plan.name', read_only=True, default=None
     )
-    user_count = serializers.IntegerField(read_only=True)
+    user_count = serializers.SerializerMethodField()
+    patient_count = serializers.SerializerMethodField()
     state_name = serializers.CharField(source='state.name', read_only=True)
     country_name = serializers.CharField(source='country.name', read_only=True)
     root_admin = serializers.SerializerMethodField()
@@ -21,8 +22,16 @@ class TenantAdminListSerializer(serializers.ModelSerializer):
             'is_active', 'subscription_status', 'subscription_plan',
             'subscription_plan_name', 'monthly_fee', 'subscription_start_date',
             'subscription_end_date', 'facility_type', 'state_name',
-            'country_name', 'user_count', 'created_at', 'root_admin',
+            'country_name', 'user_count', 'patient_count', 'created_at', 'root_admin',
         ]
+
+    def get_user_count(self, obj):
+        user_counts = self.context.get('user_counts') or {}
+        return user_counts.get(obj.id, 0)
+
+    def get_patient_count(self, obj):
+        patient_counts = self.context.get('patient_counts') or {}
+        return patient_counts.get(obj.id, 0)
 
     def get_root_admin(self, obj):
         root_admins = self.context.get('root_admins') or {}
@@ -55,6 +64,8 @@ class TenantDetailSerializer(serializers.ModelSerializer):
     days_remaining_in_trial = serializers.SerializerMethodField()
     is_active_status = serializers.SerializerMethodField()
     root_admin = serializers.SerializerMethodField()
+    user_count = serializers.SerializerMethodField()
+    patient_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -68,11 +79,12 @@ class TenantDetailSerializer(serializers.ModelSerializer):
             'public_id', 'is_active', 'email', 'phone', 'phone2', 'address',
             'city', 'registration_number', 'tax_id', 'website',
             'subscription_status', 'monthly_fee', 'payment_method',
-            'billing_email', 'nhis_accreditation', 'nhis_provider_id',
-            'bed_capacity', 'operating_hours', 'emergency_services',
-            'config', 'features', 'notes', 'logo', 'state', 'lga',
-            'country', 'facility_type', 'subscription_plan', 'created_by',
-            'root_admin',
+            'billing_email', 'include_email_service', 'include_sms_service',
+            'email_service_cost', 'sms_service_cost', 'nhis_accreditation',
+            'nhis_provider_id', 'bed_capacity', 'operating_hours',
+            'emergency_services', 'config', 'features', 'notes', 'logo',
+            'state', 'lga', 'country', 'facility_type', 'subscription_plan',
+            'created_by', 'root_admin', 'user_count', 'patient_count',
         ]
 
     def get_root_admin(self, obj):
@@ -87,6 +99,14 @@ class TenantDetailSerializer(serializers.ModelSerializer):
             'role': admin.role,
             'employee_id': admin.employee_id,
         }
+
+    def get_user_count(self, obj):
+        user_counts = self.context.get('user_counts') or {}
+        return user_counts.get(obj.id, 0)
+
+    def get_patient_count(self, obj):
+        patient_counts = self.context.get('patient_counts') or {}
+        return patient_counts.get(obj.id, 0)
 
     def get_tenant_id(self, obj):
         return str(obj.public_id)
@@ -159,9 +179,10 @@ class TenantUpdateSerializer(serializers.ModelSerializer):
             'state', 'lga', 'country', 'facility_type', 'registration_number',
             'tax_id', 'website', 'subscription_plan', 'subscription_status',
             'subscription_start_date', 'subscription_end_date', 'monthly_fee',
-            'payment_method', 'billing_email', 'nhis_accreditation',
-            'nhis_provider_id', 'nhis_accreditation_date', 'nhis_expiry_date',
-            'bed_capacity', 'established_date', 'emergency_services', 'notes',
+            'payment_method', 'billing_email', 'include_email_service',
+            'include_sms_service', 'email_service_cost', 'sms_service_cost',
+            'nhis_accreditation', 'nhis_provider_id', 'nhis_accreditation_date',
+            'nhis_expiry_date', 'bed_capacity', 'established_date', 'emergency_services', 'notes',
         ]
         extra_kwargs = {
             'name': {'required': False},
@@ -171,6 +192,8 @@ class TenantUpdateSerializer(serializers.ModelSerializer):
             'city': {'required': False},
             'facility_type': {'required': False},
             'registration_number': {'required': False},
+            'bed_capacity': {'required': False},
+            'monthly_fee': {'required': False},
         }
 
     def validate_domain(self, value):
@@ -195,8 +218,9 @@ class TenantCreateSerializer(serializers.ModelSerializer):
             'name', 'code', 'domain', 'schema_name', 'email', 'phone',
             'address', 'city', 'state', 'lga', 'country', 'facility_type',
             'registration_number', 'tax_id', 'website', 'subscription_plan',
-            'subscription_status', 'monthly_fee', 'bed_capacity',
-            'is_active', 'notes', 'root_admin',
+            'subscription_status', 'monthly_fee', 'include_email_service',
+            'include_sms_service', 'email_service_cost', 'sms_service_cost',
+            'bed_capacity', 'is_active', 'notes', 'root_admin',
         ]
         read_only_fields = ['code', 'schema_name']
 

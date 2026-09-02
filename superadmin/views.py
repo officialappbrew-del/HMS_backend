@@ -27,6 +27,7 @@ from tenants.serializers import (
     SubscriptionPlanSerializer,
 )
 from users.models import GlobalUser
+from users.tasks import send_tenant_welcome_email, send_tenant_welcome_email_task
 
 from .serializers import (
     TenantAdminListSerializer,
@@ -57,12 +58,18 @@ def _ensure_public_schema():
 
 
 def _count_users_per_tenant():
-    """Return a dict mapping tenant_id -> user count, across all tenants."""
+    """Return a dict mapping tenant_id -> user count, across all tenants.
+
+    Each tenant schema contains its own user table, but all rows still carry a
+    tenant_id foreign key back to the public Tenant record. We must filter by the
+    specific tenant_id so a schema with many users is not counted for every tenant
+    in the dashboard.
+    """
     counts = {}
     for tenant in Tenant.objects.filter(is_active=True):
         try:
             connection.set_schema(tenant.schema_name)
-            counts[tenant.id] = TenantUser.objects.count()
+            counts[tenant.id] = TenantUser.objects.filter(tenant_id=tenant.id).count()
         except Exception:
             counts[tenant.id] = 0
         finally:
@@ -78,7 +85,7 @@ def _count_patients_per_tenant():
     for tenant in Tenant.objects.filter(is_active=True):
         try:
             connection.set_schema(tenant.schema_name)
-            counts[tenant.id] = Patient.objects.count()
+            counts[tenant.id] = Patient.objects.filter(tenant_id=tenant.id).count()
         except Exception:
             counts[tenant.id] = 0
         finally:
@@ -382,6 +389,7 @@ class TenantAdminListView(APIView):
     def get(self, request):
         _ensure_public_schema()
         user_counts = _count_users_per_tenant()
+        patient_counts = _count_patients_per_tenant()
 
         queryset = Tenant.objects.all()
 
@@ -418,7 +426,7 @@ class TenantAdminListView(APIView):
         root_admins = {admin.tenant_id: admin for admin in root_admins_qs}
 
         serializer = TenantAdminListSerializer(
-            page, many=True, context={'user_counts': user_counts, 'root_admins': root_admins}
+            page, many=True, context={'user_counts': user_counts, 'patient_counts': patient_counts, 'root_admins': root_admins}
         )
         return paginator.get_paginated_response(serializer.data)
 
@@ -444,7 +452,14 @@ class TenantAdminDetailView(APIView):
         ).only('id', 'first_name', 'last_name', 'email', 'phone', 'role', 'employee_id').first()
         tenant._root_admin = root_admin
 
-        serializer = TenantDetailSerializer(tenant)
+        # Get user and patient counts for this tenant
+        user_counts = _count_users_per_tenant()
+        patient_counts = _count_patients_per_tenant()
+
+        serializer = TenantDetailSerializer(
+            tenant,
+            context={'user_counts': user_counts, 'patient_counts': patient_counts}
+        )
         return Response(serializer.data)
 
     def put(self, request, public_id):
@@ -581,42 +596,34 @@ class TenantAdminCreateView(APIView):
                     }
                 )
 
-                logger.info(f'📧 Sending welcome email synchronously to {admin_user.email} for tenant {tenant.name}')
+                logger.info(f'📧 Queuing welcome email asynchronously to {admin_user.email} for tenant {tenant.name}')
                 try:
-                    import datetime
-                    from django.core.mail import send_mail
-                    from django.template.loader import render_to_string
-                    from tenants.communication import build_email_context
-                    login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
-                    base_context = {
-                        'admin_name': admin_user.get_full_name() or admin_user.username,
-                        'tenant_name': tenant.name,
-                        'temporary_password': root_admin_data['password'],
-                        'login_url': login_url,
-                        'user_id': admin_user.employee_id or admin_user.id,
-                        'admin_email': admin_user.email,
-                        'year': datetime.date.today().year,
-                        'app_name': settings.APP_NAME,
-                    }
-                    logger.info(f'   Building email context for tenant {tenant.id}')
-                    context = build_email_context(tenant, extra=base_context)
-                    subject = f'Welcome to {tenant.name} - Account Created'
-                    logger.info(f'   Rendering email templates...')
-                    html_message = render_to_string('users/tenant_welcome_email.html', context)
-                    plain_message = render_to_string('users/tenant_welcome_email.txt', context)
-                    logger.info(f'   Sending email via {settings.EMAIL_BACKEND} from global email to {admin_user.email}')
-                    send_mail(
-                        subject=subject,
-                        message=plain_message,
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        recipient_list=[admin_user.email],
-                        html_message=html_message,
-                        fail_silently=False,
+                    login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/') + '/login'
+                    email_args = (
+                        admin_user.email,
+                        admin_user.get_full_name() or admin_user.username,
+                        tenant.name,
+                        root_admin_data['password'],
+                        login_url,
+                        admin_user.id,
                     )
-                    logger.info(f'✅ Tenant welcome email sent synchronously to {admin_user.email}')
-                except Exception as sync_exc:
-                    logger.error(f'❌ Failed to send tenant welcome email synchronously to {admin_user.email}: {sync_exc}')
-                    logger.exception(sync_exc)
+                    send_tenant_welcome_email_task.delay(*email_args)
+                    logger.info(f'✅ Tenant welcome email queued for {admin_user.email}')
+                except Exception as async_exc:
+                    logger.warning(f'⚠️ Celery queue unavailable for welcome email to {admin_user.email}; falling back to direct send: {async_exc}')
+                    try:
+                        send_tenant_welcome_email(*(
+                            admin_user.email,
+                            admin_user.get_full_name() or admin_user.username,
+                            tenant.name,
+                            root_admin_data['password'],
+                            login_url,
+                            admin_user.id,
+                        ))
+                        logger.info(f'✅ Tenant welcome email sent directly to {admin_user.email}')
+                    except Exception as sync_exc:
+                        logger.error(f'❌ Failed to send tenant welcome email directly to {admin_user.email}: {sync_exc}')
+                        logger.exception(sync_exc)
 
             except Exception as exc:
                 logger.error(f'Failed to create root admin: {exc}')
@@ -672,6 +679,63 @@ class TenantToggleView(APIView):
         )
 
         return Response({'detail': f'Tenant {"activated" if tenant.is_active else "deactivated"} successfully'})
+
+
+class TenantDeleteView(APIView):
+    """Permanently delete a tenant and all associated data (schema, records, etc).
+    
+    Requires super admin permission only. Requires confirmation with exact tenant name.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def delete(self, request, public_id):
+        _ensure_public_schema()
+        tenant = Tenant.objects.filter(public_id=public_id).first()
+        if not tenant:
+            return Response({'error': 'Tenant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Require confirmation name to match the actual tenant name
+        confirmation_name = request.data.get('confirmation_name', '').strip()
+        if confirmation_name != tenant.name:
+            return Response(
+                {'error': f'Confirmation name does not match. Please type "{tenant.name}" exactly.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        tenant_name = tenant.name
+        tenant_code = tenant.code
+        schema_name = tenant.schema_name
+
+        # Log before deletion
+        AuditLog.objects.create(
+            user=request.user,
+            action='delete_tenant',
+            resource_type='tenant',
+            resource_id=str(tenant.public_id),
+            title=f'Tenant permanently deleted: {tenant_name}',
+            old_values={'name': tenant_name, 'code': tenant_code, 'schema': schema_name},
+        )
+
+        try:
+            # Drop the tenant's schema (cascade deletes all tenant data)
+            try:
+                connection.cursor().execute(f'DROP SCHEMA IF EXISTS {connection.ops.quote_name(schema_name)} CASCADE')
+            except Exception as e:
+                logger.warning(f'Failed to drop schema {schema_name}: {e}')
+
+            # Delete the tenant record from public schema
+            tenant.delete()
+
+            return Response(
+                {'detail': f'Tenant "{tenant_name}" and all associated data have been permanently deleted.'},
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            logger.error(f'Error deleting tenant {tenant_name}: {e}')
+            return Response(
+                {'error': f'Failed to delete tenant: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class PlatformUserListView(APIView):
@@ -1310,10 +1374,16 @@ class TenantSubscriptionDetailView(APIView):
                 'is_subscription_expiring_soon': tenant.is_subscription_expiring_soon,
                 'billing_email': tenant.billing_email,
                 'email': tenant.email,
+                'include_email_service': tenant.include_email_service,
+                'include_sms_service': tenant.include_sms_service,
+                'email_service_cost': str(tenant.email_service_cost),
+                'sms_service_cost': str(tenant.sms_service_cost),
             },
             'notifications': SubscriptionExpiryNotificationSerializer(notifications, many=True).data,
             'payments': list(SubscriptionPayment.objects.filter(tenant=tenant).values(
-                'reference', 'amount', 'currency', 'billing_period', 'status', 'gateway', 'paid_at', 'created_at'
+                'reference', 'amount', 'currency', 'billing_period', 'status', 'gateway',
+                'include_email_service', 'include_sms_service', 'email_service_cost', 'sms_service_cost',
+                'paid_at', 'created_at'
             )[:20]),
             'available_plans': SubscriptionPlanSerializer(
                 SubscriptionPlan.objects.filter(is_active=True).order_by('display_order', 'price_monthly'),

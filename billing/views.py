@@ -179,9 +179,14 @@ def _activate_subscription(payment):
     tenant.subscription_end_date = today + timezone.timedelta(days=periods[payment.billing_period])
     tenant.monthly_fee = payment.plan.price_monthly
     tenant.payment_method = payment.gateway
+    tenant.include_email_service = payment.include_email_service
+    tenant.include_sms_service = payment.include_sms_service
+    tenant.email_service_cost = payment.email_service_cost
+    tenant.sms_service_cost = payment.sms_service_cost
     tenant.save(update_fields=[
         'subscription_plan', 'subscription_status', 'subscription_start_date',
-        'subscription_end_date', 'monthly_fee', 'payment_method', 'updated_at',
+        'subscription_end_date', 'monthly_fee', 'payment_method',
+        'include_email_service', 'include_sms_service', 'email_service_cost', 'sms_service_cost', 'updated_at',
     ])
 
 
@@ -197,15 +202,51 @@ class SubscriptionOverviewView(APIView):
         if tenant is None:
             return Response({'error': 'Tenant not found'}, status=status.HTTP_404_NOT_FOUND)
 
+        current_plan = tenant.subscription_plan
+        monthly_total = Decimal('0')
+        if current_plan:
+            monthly_total = Decimal(str(current_plan.price_monthly))
+            if tenant.include_email_service:
+                monthly_total += Decimal(str(current_plan.email_service_cost_monthly))
+            if tenant.include_sms_service:
+                monthly_total += Decimal(str(current_plan.sms_service_cost_monthly))
+
         return Response({
             'tenant_id': str(tenant.public_id),
             'tenant_name': tenant.name,
             'subscription_status': tenant.subscription_status,
             'subscription_plan': tenant.subscription_plan_id,
-            'subscription_plan_name': tenant.subscription_plan.name if tenant.subscription_plan else None,
+            'subscription_plan_name': current_plan.name if current_plan else None,
             'subscription_start_date': tenant.subscription_start_date,
             'subscription_end_date': tenant.subscription_end_date,
             'days_remaining': tenant.days_remaining,
+            'billing_email': tenant.billing_email,
+            'include_email_service': tenant.include_email_service,
+            'include_sms_service': tenant.include_sms_service,
+            'email_service_cost': str(tenant.email_service_cost),
+            'sms_service_cost': str(tenant.sms_service_cost),
+            'monthly_fee': str(tenant.monthly_fee or monthly_total),
+            'current_monthly_total': str(monthly_total),
+            'available_plans': [
+                {
+                    'id': plan.id,
+                    'name': plan.name,
+                    'code': plan.code,
+                    'description': plan.description,
+                    'currency': plan.currency,
+                    'price_monthly': str(plan.price_monthly),
+                    'price_quarterly': str(plan.price_quarterly),
+                    'price_yearly': str(plan.price_yearly),
+                    'max_users': plan.max_users,
+                    'max_patients': plan.max_patients,
+                    'max_storage_gb': plan.max_storage_gb,
+                    'email_service_cost_monthly': str(plan.email_service_cost_monthly),
+                    'sms_service_cost_monthly': str(plan.sms_service_cost_monthly),
+                    'is_active': plan.is_active,
+                    'service_providers': plan.service_providers,
+                }
+                for plan in SubscriptionPlan.objects.filter(is_active=True).order_by('display_order', 'price_monthly')
+            ],
         })
 
 
@@ -229,10 +270,30 @@ class SubscriptionCheckoutView(APIView):
         if not plan:
             return Response({'error': 'Invalid subscription plan'}, status=status.HTTP_400_BAD_REQUEST)
         billing_period = request.data.get('billing_period', 'monthly')
+        
+        # Service selections
+        include_email_service = request.data.get('email_service', False)
+        include_sms_service = request.data.get('sms_service', False)
+        
         try:
             amount = _plan_amount(plan, billing_period)
         except ValueError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Calculate service costs
+        email_service_cost = Decimal(0)
+        sms_service_cost = Decimal(0)
+        
+        if include_email_service:
+            months_multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(billing_period, 1)
+            email_service_cost = plan.email_service_cost_monthly * months_multiplier
+            amount += email_service_cost
+            
+        if include_sms_service:
+            months_multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(billing_period, 1)
+            sms_service_cost = plan.sms_service_cost_monthly * months_multiplier
+            amount += sms_service_cost
+        
         if amount <= 0:
             return Response({'error': 'This plan has no payable price'}, status=status.HTTP_400_BAD_REQUEST)
         if not payment_setting_configured('paystack_secret_key'):
@@ -242,6 +303,10 @@ class SubscriptionCheckoutView(APIView):
         payment = SubscriptionPayment.objects.create(
             tenant=tenant, plan=plan, reference=reference, amount=amount,
             currency=plan.currency, billing_period=billing_period,
+            include_email_service=include_email_service,
+            include_sms_service=include_sms_service,
+            email_service_cost=email_service_cost,
+            sms_service_cost=sms_service_cost,
         )
         try:
             response = requests.post(

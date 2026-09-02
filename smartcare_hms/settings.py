@@ -662,24 +662,28 @@ SERVER_EMAIL = config('SERVER_EMAIL', default='noreply@smartcarehms.local')
 # ============================================
 # CELERY SETTINGS
 # ============================================
-# In DEBUG mode (local development), run tasks eagerly (synchronously) to avoid
-# needing a separate Celery worker and Redis broker. This makes debugging easier.
-# In production, tasks are queued asynchronously via Redis/Celery.
-# IMPORTANT: Celery reads CELERY_BROKER_URL, not REDIS_URL directly. We therefore
-# use REDIS_URL as the default source but make the broker URL explicit so Render
-# does not silently fall back to localhost:6379.
-if DEBUG:
-    CELERY_TASK_ALWAYS_EAGER = True  # Execute tasks immediately in dev
-    CELERY_TASK_EAGER_PROPAGATES = True  # Propagate exceptions from eager tasks
-    CELERY_BROKER_URL = 'memory://'  # In-memory broker (won't actually be used in eager mode)
-    CELERY_RESULT_BACKEND = 'cache+memory://'  # In-memory result backend
+# Celery should be async by default when Redis is configured. Local debugging can
+# still force eager execution explicitly with CELERY_TASK_ALWAYS_EAGER=true.
+# This avoids silent in-process execution when the project already has Redis/Celery.
+CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=bool)
+CELERY_TASK_EAGER_PROPAGATES = True
+
+if DEBUG and not CELERY_TASK_ALWAYS_EAGER:
+    # If Redis is present, prefer the real broker for local testing; otherwise
+    # keep a lightweight in-memory fallback for developer convenience.
+    CELERY_BROKER_URL = config(
+        'CELERY_BROKER_URL',
+        default=_REDIS_URL or 'memory://',
+    )
+    CELERY_RESULT_BACKEND = config(
+        'CELERY_RESULT_BACKEND',
+        default=_REDIS_URL or 'cache+memory://',
+    )
 else:
-    CELERY_TASK_ALWAYS_EAGER = False
     CELERY_BROKER_URL = config(
         'CELERY_BROKER_URL',
         default=_REDIS_URL or 'redis://localhost:6379/0',
     )
-    # Use Redis for the result backend when available to reduce DB writes
     CELERY_RESULT_BACKEND = config(
         'CELERY_RESULT_BACKEND',
         default=_REDIS_URL or 'django-db',

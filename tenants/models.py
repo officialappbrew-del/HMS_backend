@@ -13,6 +13,12 @@ from core.models import BaseModel, Country, State, LGA, FacilityType
 
 class Tenant(BaseModel):
     """Healthcare facility/tenant model."""
+
+    # django-tenants compatibility flags. The project uses a custom tenant model,
+    # so these attributes must exist explicitly for delete hooks and schema helpers.
+    auto_create_schema = True
+    auto_drop_schema = False
+
     class SubscriptionStatus(models.TextChoices):
         ACTIVE = 'active', _('Active')
         TRIAL = 'trial', _('Trial')
@@ -64,6 +70,12 @@ class Tenant(BaseModel):
     monthly_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     payment_method = models.CharField(max_length=50, blank=True)
     billing_email = models.EmailField(blank=True)
+
+    # Optional service add-ons
+    include_email_service = models.BooleanField(default=False, help_text='Whether the tenant has email service enabled')
+    include_sms_service = models.BooleanField(default=False, help_text='Whether the tenant has SMS service enabled')
+    email_service_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='Current monthly email service cost')
+    sms_service_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='Current monthly SMS service cost')
     
     # NHIS Integration
     nhis_accreditation = models.CharField(
@@ -251,6 +263,13 @@ class SubscriptionPayment(BaseModel):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     currency = models.CharField(max_length=3, default='NGN')
     billing_period = models.CharField(max_length=20, default='monthly')
+    
+    # Service selections
+    include_email_service = models.BooleanField(default=False, help_text='Whether email service is included in this subscription')
+    include_sms_service = models.BooleanField(default=False, help_text='Whether SMS service is included in this subscription')
+    email_service_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='Email service cost for this billing period')
+    sms_service_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text='SMS service cost for this billing period')
+    
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     gateway = models.CharField(max_length=30, default='paystack')
     gateway_response = models.JSONField(default=dict, blank=True)

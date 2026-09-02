@@ -79,6 +79,10 @@ services:
           name: smartcare_hms_redis
           property: connectionString
 
+  - type: redis
+    name: smartcare_hms_redis
+    plan: starter
+
 databases:
   - name: smartcare_hms_db
     plan: starter
