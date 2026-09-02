@@ -24,7 +24,7 @@ from .models import (
     TenantSetting, TenantModule, TenantInvitation,
     TenantActivityLog, TenantBackup, BulkTenantUserUpload,
     CommunicationProfile, ExternalServiceProfile, SupportTicket, TenantDomain,
-    SubscriptionPayment
+    SubscriptionPayment, SUBSCRIPTION_PERIOD_MONTHS
 )
 from .serializers import (
     TenantSerializer, SubscriptionPlanSerializer, TenantUserSerializer,
@@ -2695,6 +2695,10 @@ def _initialize_signup_payment(plan, billing_period, payment_method, signup_data
         'quarterly': plan.price_quarterly,
         'yearly': plan.price_yearly,
     }
+    if billing_period not in SUBSCRIPTION_PERIOD_MONTHS:
+        raise ValueError('billing_period must be monthly, quarterly, or yearly')
+    if SUBSCRIPTION_PERIOD_MONTHS[billing_period] > 12:
+        raise ValueError('Subscription periods cannot exceed 12 months.')
     amount = amounts[billing_period]
     if amount <= 0:
         raise ValueError('The selected subscription plan must have a payable price.')

@@ -11,6 +11,13 @@ from django_tenants.models import TenantMixin, DomainMixin
 from core.models import BaseModel, Country, State, LGA, FacilityType
 
 
+SUBSCRIPTION_PERIOD_MONTHS = {
+    'monthly': 1,
+    'quarterly': 3,
+    'yearly': 12,
+}
+
+
 class Tenant(BaseModel):
     """Healthcare facility/tenant model."""
 

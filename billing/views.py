@@ -21,7 +21,7 @@ from core.views import TenantScopedModelViewSet
 from core.permissions import IsFinanceStaff, IsTenantRootAdminOrGlobalAdmin
 from core.permissions import IsClinicalStaff
 from .models import Invoice, InvoiceItem, Payment, InsuranceClaim, BillingAuditLog
-from tenants.models import Tenant, SubscriptionPayment, SubscriptionPlan
+from tenants.models import Tenant, SubscriptionPayment, SubscriptionPlan, SUBSCRIPTION_PERIOD_MONTHS
 from pharmacy.models import Sale, SaleItem
 from budgeting.models import Budget
 from core.payment_settings import get_payment_setting, payment_setting_configured
@@ -160,6 +160,8 @@ def _plan_amount(plan, billing_period):
     }
     if billing_period not in amounts:
         raise ValueError('billing_period must be monthly, quarterly, or yearly')
+    if SUBSCRIPTION_PERIOD_MONTHS[billing_period] > 12:
+        raise ValueError('Subscription periods cannot exceed 12 months.')
     return Decimal(amounts[billing_period])
 
 
@@ -285,12 +287,12 @@ class SubscriptionCheckoutView(APIView):
         sms_service_cost = Decimal(0)
         
         if include_email_service:
-            months_multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(billing_period, 1)
+            months_multiplier = SUBSCRIPTION_PERIOD_MONTHS[billing_period]
             email_service_cost = plan.email_service_cost_monthly * months_multiplier
             amount += email_service_cost
             
         if include_sms_service:
-            months_multiplier = {'monthly': 1, 'quarterly': 3, 'yearly': 12}.get(billing_period, 1)
+            months_multiplier = SUBSCRIPTION_PERIOD_MONTHS[billing_period]
             sms_service_cost = plan.sms_service_cost_monthly * months_multiplier
             amount += sms_service_cost
         

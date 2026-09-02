@@ -40,13 +40,13 @@ facility_type, facility_type_created = FacilityType.objects.get_or_create(
 
 # Create or fetch a default subscription plan
 subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
-    code='PUBLIC_FREE',
+    code='PREMIUM',
     defaults={
-        'name': 'Public Free Plan',
-        'description': 'Free plan for the public/system tenant',
-        'price_monthly': 0,
-        'price_quarterly': 0,
-        'price_yearly': 0,
+        'name': 'Premium Plan',
+        'description': 'Premium plan for the public/system tenant',
+        'price_monthly': 60000,
+        'price_quarterly': 2400000,
+        'price_yearly': 7200000,
         'currency': 'NGN',
         'max_users': 10,
         'max_patients': 100,
@@ -70,8 +70,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
         # 'domain': 'hms-backend-l09g.onrender.com',
         # 'domain': '1145-102-90-124-57.ngrok-free.app',
         'domain': 'localhost',
-        # 'email': 'admin.app@onrender.com',
-        'email': 'admin.app@local.app.com',
+        'email': 'admin.app@onrender.com',
+        # 'email': 'admin.app@local.app.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
