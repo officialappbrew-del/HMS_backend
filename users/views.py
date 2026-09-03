@@ -1172,7 +1172,7 @@ class PasswordResetRequestView(APIView):
             recipient_email = user.email
             reset_token = PasswordResetToken.objects.create(
                 email=recipient_email,
-                token=uuid.uuid4().hex + uuid.uuid4().hex,
+                token=f'{secrets.randbelow(10**12):012d}',
                 expires_at=timezone.now() + timezone.timedelta(hours=1),
                 user_type=user_type,
                 user_id=user.id,

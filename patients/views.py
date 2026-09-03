@@ -3,6 +3,7 @@ import time
 import threading
 import logging
 import uuid
+import secrets
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
@@ -1628,7 +1629,7 @@ class PatientPasswordResetRequestView(APIView):
             recipient_email = patient.email
             reset_token = PasswordResetToken.objects.create(
                 email=recipient_email,
-                token=uuid.uuid4().hex + uuid.uuid4().hex,
+                token=f'{secrets.randbelow(10**12):012d}',
                 expires_at=timezone.now() + timezone.timedelta(hours=1),
                 user_type='patient',
                 user_id=patient.id,
