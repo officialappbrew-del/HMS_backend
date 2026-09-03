@@ -627,6 +627,16 @@ class AuthenticationView(APIView):
             if not user:
                 user = TenantUser.objects.filter(is_active=True, username=identifier).first()
             if not user:
+                archived_user = TenantUser.objects.filter(
+                    is_active=False,
+                ).filter(
+                    models_Q(employee_id=identifier) | models_Q(username=identifier)
+                ).first()
+                if archived_user and archived_user.check_password(password):
+                    return Response(
+                        {'error': 'This account has been archived. Please contact your administrator.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
                 return Response(
                     {'error': 'Invalid tenant credentials.'},
                     status=status.HTTP_400_BAD_REQUEST,
@@ -757,6 +767,18 @@ class AuthenticationView(APIView):
                     user = TenantUser.objects.filter(is_active=True, email=user_id).first()
                 if user and user.check_password(password):
                     return self._build_tenant_login_response(tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email', request)
+                archived_user = TenantUser.objects.filter(
+                    is_active=False,
+                ).filter(
+                    models_Q(employee_id=user_id) |
+                    models_Q(username=user_id) |
+                    models_Q(email=user_id)
+                ).first()
+                if archived_user and archived_user.check_password(password):
+                    return Response(
+                        {'error': 'This account has been archived. Please contact your administrator.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
             finally:
                 connection.set_schema('public')
 

@@ -65,6 +65,15 @@ class RotatingFileHandlerWithJSON(logging.handlers.RotatingFileHandler):
     def __init__(self, filename, maxBytes=10485760, backupCount=10, *args, **kwargs):
         super().__init__(filename, maxBytes=maxBytes, backupCount=backupCount, *args, **kwargs)
 
+    def doRollover(self):
+        """Rotate logs without raising when Windows has a shared file lock."""
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Multiple Django/Celery processes can hold the file during rotation.
+            # Keep the active log open and retry on a later rollover check.
+            return
+
 
 def setup_logging(base_dir, debug=False):
     """
