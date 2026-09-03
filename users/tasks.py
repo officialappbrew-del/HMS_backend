@@ -281,7 +281,11 @@ def send_tenant_welcome_email(recipient_email, admin_name, tenant_name, temporar
     
     tenant_instance = None
     if user_id:
-        tenant_instance = TenantUser.objects.select_related('tenant').filter(id=user_id).values_list('tenant', flat=True).first()
+        tenant_user = TenantUser.objects.select_related('tenant').filter(employee_id=user_id).first()
+        if not tenant_user and str(user_id).isdigit():
+            tenant_user = TenantUser.objects.select_related('tenant').filter(id=user_id).first()
+        if tenant_user:
+            tenant_instance = tenant_user.tenant_id
         if tenant_instance:
             from tenants.models import Tenant
             tenant_instance = Tenant.objects.get(pk=tenant_instance)

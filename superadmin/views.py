@@ -596,7 +596,8 @@ class TenantAdminCreateView(APIView):
                     }
                 )
 
-                logger.info(f'📧 Queuing welcome email asynchronously to {admin_user.email} for tenant {tenant.name}')
+                delivery_mode = getattr(settings, 'EMAIL_DELIVERY_MODE', 'async')
+                logger.info(f'📧 Sending welcome email in {delivery_mode} mode to {admin_user.email} for tenant {tenant.name}')
                 try:
                     login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/') + '/login'
                     email_args = (
@@ -605,7 +606,7 @@ class TenantAdminCreateView(APIView):
                         tenant.name,
                         root_admin_data['password'],
                         login_url,
-                        admin_user.id,
+                        admin_user.employee_id,
                     )
                     from smartcare_hms.email_delivery import dispatch_email_task
                     dispatch_email_task(send_tenant_welcome_email_task, args=email_args)
@@ -619,7 +620,7 @@ class TenantAdminCreateView(APIView):
                             tenant.name,
                             root_admin_data['password'],
                             login_url,
-                            admin_user.id,
+                            admin_user.employee_id,
                         ))
                         logger.info(f'✅ Tenant welcome email sent directly to {admin_user.email}')
                     except Exception as sync_exc:
