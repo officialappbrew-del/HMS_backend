@@ -126,6 +126,20 @@ class IsDoctorOrNurse(permissions.BasePermission):
         )
 
 
+class IsDoctorOrNurseOrTenantRootAdmin(permissions.BasePermission):
+    """Allow clinical staff and tenant-root administrators."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        role = _get_user_role(request.user)
+        if role in {'doctor', 'nurse'}:
+            return True
+
+        return IsTenantRootAdminOrGlobalAdmin().has_permission(request, view)
+
+
 class IsLabTechnician(permissions.BasePermission):
     """Check if user is a lab technician or lab manager."""
 

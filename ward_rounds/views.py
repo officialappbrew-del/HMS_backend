@@ -8,7 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from core.views import TenantScopedModelViewSet
-from core.permissions import IsDoctorOrNurse, IsClinicalStaff, IsTenantRootAdminOrGlobalAdmin
+from core.permissions import IsDoctorOrNurseOrTenantRootAdmin, IsClinicalStaff
 from patients.models import Patient
 from .models import WardRound, HandoverNote, GrandRound, Ward, Bed
 from .serializers import (
@@ -23,7 +23,7 @@ from .serializers import (
 class WardRoundViewSet(TenantScopedModelViewSet):
     queryset = WardRound.objects.all()
     serializer_class = WardRoundSerializer
-    permission_classes = [IsDoctorOrNurse]
+    permission_classes = [IsDoctorOrNurseOrTenantRootAdmin]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -120,13 +120,13 @@ class WardRoundViewSet(TenantScopedModelViewSet):
 class HandoverNoteViewSet(TenantScopedModelViewSet):
     queryset = HandoverNote.objects.all()
     serializer_class = HandoverNoteSerializer
-    permission_classes = [IsDoctorOrNurse]
+    permission_classes = [IsDoctorOrNurseOrTenantRootAdmin]
 
 
 class GrandRoundViewSet(TenantScopedModelViewSet):
     queryset = GrandRound.objects.all()
     serializer_class = GrandRoundSerializer
-    permission_classes = [IsDoctorOrNurse]
+    permission_classes = [IsDoctorOrNurseOrTenantRootAdmin]
 
     def get_queryset(self):
         qs = super().get_queryset()
