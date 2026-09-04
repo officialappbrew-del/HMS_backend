@@ -77,6 +77,9 @@ class ProgressNote(BaseModel):
     objective = models.TextField(blank=True)
     assessment = models.TextField(blank=True)
     plan = models.TextField(blank=True)
+
+    template_type = models.CharField(max_length=80, blank=True)
+    template_data = models.JSONField(default=dict, blank=True)
     
     note_type = models.CharField(max_length=20, choices=[
         ('progress', 'Progress Note'),

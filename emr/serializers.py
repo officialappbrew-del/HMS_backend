@@ -16,6 +16,8 @@ class MedicalRecordSerializer(serializers.ModelSerializer):
 class ProgressNoteSerializer(serializers.ModelSerializer):
     author_name = serializers.CharField(source='author.get_full_name', read_only=True)
     medical_record_number = serializers.CharField(source='medical_record.record_number', read_only=True)
+    patient = serializers.IntegerField(source='medical_record.patient_id', read_only=True)
+    patient_name = serializers.CharField(source='medical_record.patient.get_full_name', read_only=True)
     
     class Meta:
         model = ProgressNote

@@ -1,3 +1,4 @@
+from django.db import models
 from django.utils import timezone
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
@@ -53,6 +54,18 @@ class AllergyCheckViewSet(TenantScopedModelViewSet):
         if patient_id:
             qs = qs.filter(patient_id=patient_id)
         return qs
+
+    @action(detail=False, methods=['post'], url_path='check')
+    def check(self, request):
+        patient_id = request.data.get('patient')
+        medication = str(request.data.get('medication', '')).strip().lower()
+        if not patient_id or not medication:
+            return Response({'detail': 'Patient and medication are required.'}, status=400)
+        matches = [
+            item for item in self.get_queryset().filter(patient_id=patient_id)
+            if item.allergen.lower() in medication or medication in item.allergen.lower()
+        ]
+        return Response(AllergyCheckSerializer(matches, many=True).data)
 
 
 class DosingGuidelineViewSet(TenantScopedModelViewSet):
