@@ -110,7 +110,7 @@ class DataBreachSerializer(serializers.ModelSerializer):
             'id', 'breachType', 'affectedData', 'affectedIndividuals', 'breachDate', 'discoveryDate',
             'description', 'containmentActions', 'impactAssessment', 'severity', 'status',
             'reportedToNITDA', 'nitdaReportDate', 'notificationSent', 'notificationsSentCount',
-            'responseTime_hours', 'investigationFindings', 'preventiveActions', 'reportedBy',
+            'responseTimeHours', 'investigationFindings', 'preventiveActions', 'reportedBy',
             'created_at', 'updated_at', 'is_active'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'is_active', 'tenant', 'response_time_hours']
