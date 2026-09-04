@@ -133,6 +133,7 @@ class IPDStayViewSet(TenantScopedModelViewSet):
         })
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def transfer(self, request, pk=None):
         stay = self.get_object()
         user = tenant_user(request)
