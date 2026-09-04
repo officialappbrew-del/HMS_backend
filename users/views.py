@@ -1623,12 +1623,18 @@ class SecurityEventViewSet(viewsets.ReadOnlyModelViewSet):
 class UserNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     """ViewSet for managing user notifications."""
     serializer_class = UserNotificationSerializer
+
+    def _notification_user(self):
+        if isinstance(self.request.user, GlobalUser):
+            return self.request.user
+        return getattr(self.request.user, 'global_user', None)
     
     def get_queryset(self):
-        if not isinstance(self.request.user, GlobalUser):
+        notification_user = self._notification_user()
+        if notification_user is None:
             return UserNotification.objects.none()
         return UserNotification.objects.filter(
-            user=self.request.user,
+            user=notification_user,
             is_read=False
         ).order_by('-created_at')
     
@@ -1643,8 +1649,11 @@ class UserNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['post'])
     def mark_all_as_read(self, request):
         """Mark all notifications as read."""
+        notification_user = self._notification_user()
+        if notification_user is None:
+            return Response({'detail': 'Notifications are unavailable for this account.'}, status=status.HTTP_403_FORBIDDEN)
         UserNotification.objects.filter(
-            user=request.user,
+            user=notification_user,
             is_read=False
         ).update(is_read=True, read_at=timezone.now())
         
@@ -1653,8 +1662,11 @@ class UserNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'])
     def unread_count(self, request):
         """Get count of unread notifications."""
+        notification_user = self._notification_user()
+        if notification_user is None:
+            return Response({'count': 0})
         count = UserNotification.objects.filter(
-            user=request.user,
+            user=notification_user,
             is_read=False
         ).count()
         

@@ -13,7 +13,7 @@ from .serializers import (
 )
 from core.views import TenantScopedModelViewSet
 from patients.models import Patient
-from core.permissions import IsDoctor, IsPharmacist, IsNurse, IsDoctorOrPharmacist, IsDoctorOrNurse, IsClinicalStaff
+from core.permissions import IsDoctor, IsPharmacist, IsNurse, IsDoctorOrPharmacistOrTenantRootAdmin, IsDoctorOrNurse, IsClinicalStaff
 
 
 class ConsultationNoteViewSet(TenantScopedModelViewSet):
@@ -87,7 +87,7 @@ class ConsultationNoteViewSet(TenantScopedModelViewSet):
 class PrescriptionViewSet(TenantScopedModelViewSet):
     queryset = Prescription.objects.all()
     serializer_class = PrescriptionSerializer
-    permission_classes = [IsDoctorOrPharmacist]
+    permission_classes = [IsDoctorOrPharmacistOrTenantRootAdmin]
 
     def get_queryset(self):
         queryset = super().get_queryset().select_related('patient', 'prescribed_by', 'dispensed_by', 'visit')

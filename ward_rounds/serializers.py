@@ -2,11 +2,105 @@ from rest_framework import serializers
 from django.utils import timezone
 from .models import (
     WardRound, HandoverNote, GrandRound, Ward, Bed, Admission, EmergencyCall,
-    AmbulanceMission, ReferralRequest, DutyRoster, DutyAssignment, LeaveRequest,
+    AmbulanceMission, Ambulance, ReferralRequest, DutyRoster, DutyAssignment, LeaveRequest,
     OvertimeRecord, PerformanceAppraisal, PerformanceAudit, ResearchOutput,
-    TeachingActivity, SatisfactionSurvey, PerformanceIncident
+    TeachingActivity, SatisfactionSurvey, PerformanceIncident, EmergencyBay,
+    EmergencyCase, PatientFeedbackRecord, PatientSurvey, PatientComplaint, QualityImprovementPlan
 )
 from tenants.models import TenantUser
+from patients.models import Patient
+
+
+class EmergencyBaySerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source='bay_id', read_only=True)
+    type = serializers.CharField(source='bay_type')
+
+    class Meta:
+        model = EmergencyBay
+        fields = ['id', 'name', 'type', 'bay_id', 'bay_type', 'is_active']
+        read_only_fields = ['bay_id', 'is_active']
+
+
+class AmbulanceSerializer(serializers.ModelSerializer):
+    ambulanceId = serializers.CharField(source='ambulance_id')
+    vehicleNumber = serializers.CharField(source='vehicle_number')
+    type = serializers.CharField(source='ambulance_type')
+    fuelLevel = serializers.IntegerField(source='fuel_level')
+
+    class Meta:
+        model = Ambulance
+        fields = ['id', 'ambulanceId', 'vehicleNumber', 'type', 'status', 'location', 'fuelLevel', 'mileage', 'equipment', 'is_active']
+        read_only_fields = ['id', 'is_active']
+
+
+class EmergencyCaseSerializer(serializers.ModelSerializer):
+    patientId = serializers.PrimaryKeyRelatedField(source='patient', queryset=Patient.objects.all(), required=False, allow_null=True)
+    patientName = serializers.CharField(source='patient.get_full_name', read_only=True)
+    presentingComplaint = serializers.CharField(source='presenting_complaint')
+    modeOfArrival = serializers.CharField(source='mode_of_arrival', required=False)
+    triageScore = serializers.IntegerField(source='triage_score', required=False, allow_null=True)
+    triageColor = serializers.CharField(source='triage_color', required=False, allow_blank=True)
+    triageData = serializers.JSONField(source='triage_data', required=False)
+    assignedBay = serializers.CharField(source='assigned_bay.bay_id', read_only=True)
+    arrivalTime = serializers.DateTimeField(source='arrival_time', read_only=True)
+    triageTime = serializers.DateTimeField(source='triage_time', read_only=True)
+    treatmentStartTime = serializers.DateTimeField(source='treatment_start_time', read_only=True)
+    dischargeTime = serializers.DateTimeField(source='discharge_time', read_only=True)
+
+    class Meta:
+        model = EmergencyCase
+        fields = ['id', 'patientId', 'patientName', 'name', 'age', 'gender', 'presentingComplaint', 'modeOfArrival', 'status',
+                  'triageScore', 'triageColor', 'triageData', 'assignedBay', 'arrivalTime',
+                  'triageTime', 'treatmentStartTime', 'dischargeTime', 'disposition', 'notes']
+        read_only_fields = ['id', 'status', 'assignedBay', 'arrivalTime', 'triageTime', 'treatmentStartTime', 'dischargeTime']
+
+
+class PatientFeedbackRecordSerializer(serializers.ModelSerializer):
+    patientId = serializers.PrimaryKeyRelatedField(source='patient', queryset=Patient.objects.all(), required=False, allow_null=True)
+    patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
+    submittedAt = serializers.DateTimeField(source='submitted_at', read_only=True)
+
+    class Meta:
+        model = PatientFeedbackRecord
+        fields = ['id', 'patientId', 'patientName', 'rating', 'sentiment', 'comments', 'department', 'submittedAt']
+        read_only_fields = ['id', 'submittedAt']
+
+
+class PatientSurveySerializer(serializers.ModelSerializer):
+    targetAudience = serializers.CharField(source='target_audience', required=False)
+    distributionMethod = serializers.CharField(source='distribution_method', required=False)
+    scheduledDate = serializers.DateTimeField(source='scheduled_date', required=False, allow_null=True)
+    sentAt = serializers.DateTimeField(source='sent_at', read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = PatientSurvey
+        fields = ['id', 'title', 'type', 'questions', 'targetAudience', 'distributionMethod', 'scheduledDate',
+                  'description', 'status', 'responses', 'sentAt', 'createdAt']
+        read_only_fields = ['id', 'status', 'responses', 'sentAt', 'createdAt']
+
+
+class PatientComplaintSerializer(serializers.ModelSerializer):
+    patientId = serializers.PrimaryKeyRelatedField(source='patient', queryset=Patient.objects.all(), required=False, allow_null=True)
+    patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    resolvedAt = serializers.DateTimeField(source='resolved_at', read_only=True)
+
+    class Meta:
+        model = PatientComplaint
+        fields = ['id', 'patientId', 'patientName', 'category', 'priority', 'description', 'department',
+                  'contact_method', 'status', 'resolution', 'createdAt', 'resolvedAt']
+        read_only_fields = ['id', 'status', 'createdAt', 'resolvedAt']
+
+
+class QualityImprovementPlanSerializer(serializers.ModelSerializer):
+    responsiblePerson = serializers.CharField(source='responsible_person', required=False, allow_blank=True)
+    targetDate = serializers.DateField(source='target_date', required=False, allow_null=True)
+
+    class Meta:
+        model = QualityImprovementPlan
+        fields = ['id', 'title', 'source', 'objectives', 'responsiblePerson', 'targetDate', 'status', 'progress', 'actions', 'milestones']
+        read_only_fields = ['id']
 
 
 class WardSerializer(serializers.ModelSerializer):
@@ -484,12 +578,13 @@ class PerformanceIncidentSerializer(serializers.ModelSerializer):
 
 
 class EmergencyCallSerializer(serializers.ModelSerializer):
+    patientId = serializers.PrimaryKeyRelatedField(source='patient', queryset=Patient.objects.all(), required=False, allow_null=True)
+    patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
     callId = serializers.CharField(source='call_id', required=False, allow_blank=True)
     callerName = serializers.CharField(source='caller_name', required=False, allow_blank=True)
     callerPhone = serializers.CharField(source='caller_phone', required=False, allow_blank=True)
     incidentType = serializers.CharField(source='incident_type', required=False, allow_blank=True)
     incidentDescription = serializers.CharField(source='incident_description', required=False, allow_blank=True)
-    patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
     patientDetails = serializers.JSONField(source='patient_details', required=False, default=dict)
     incidentLocation = serializers.JSONField(source='incident_location', required=False, default=dict)
     dispatchedAmbulance = serializers.CharField(source='dispatched_ambulance', required=False, allow_blank=True)
@@ -499,13 +594,15 @@ class EmergencyCallSerializer(serializers.ModelSerializer):
         model = EmergencyCall
         fields = [
             'id', 'callId', 'callerName', 'callerPhone', 'severity', 'status', 'incidentType', 'incidentDescription',
-            'patientName', 'patientDetails', 'incidentLocation', 'dispatchedAmbulance', 'responseTime', 'notes', 'communications',
+            'patientId', 'patientName', 'patientDetails', 'incidentLocation', 'dispatchedAmbulance', 'responseTime', 'notes', 'communications',
             'created_at', 'updated_at', 'is_active'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'is_active']
 
 
 class AmbulanceMissionSerializer(serializers.ModelSerializer):
+    patientId = serializers.PrimaryKeyRelatedField(source='patient', queryset=Patient.objects.all(), required=False, allow_null=True)
+    patientName = serializers.CharField(source='patient.get_full_name', read_only=True)
     missionId = serializers.CharField(source='mission_id', required=False, allow_blank=True)
     ambulanceId = serializers.CharField(source='ambulance_id', required=False, allow_blank=True)
     incidentType = serializers.CharField(source='incident_type', required=False, allow_blank=True)
@@ -518,15 +615,22 @@ class AmbulanceMissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = AmbulanceMission
         fields = [
-            'id', 'missionId', 'ambulanceId', 'incidentType', 'priority', 'status', 'patientInfo', 'pickupLocation',
+            'id', 'missionId', 'ambulanceId', 'patientId', 'patientName', 'incidentType', 'priority', 'status', 'patientInfo', 'pickupLocation',
             'destination', 'crew', 'notes', 'dispatchedAt', 'completedAt', 'outcome', 'created_at', 'updated_at', 'is_active'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'is_active']
 
+    def validate_patientId(self, value):
+        tenant = self.context.get('tenant')
+        if value is not None and tenant is not None and value.tenant_id != tenant.id:
+            raise serializers.ValidationError('Patient does not belong to this tenant.')
+        return value
+
 
 class ReferralRequestSerializer(serializers.ModelSerializer):
-    referralId = serializers.CharField(source='referral_id', required=False, allow_blank=True)
+    patientId = serializers.PrimaryKeyRelatedField(source='patient', queryset=Patient.objects.all(), required=False, allow_null=True)
     patientName = serializers.CharField(source='patient_name', required=False, allow_blank=True)
+    referralId = serializers.CharField(source='referral_id', required=False, allow_blank=True)
     patientAge = serializers.IntegerField(source='patient_age', required=False, default=0)
     patientGender = serializers.CharField(source='patient_gender', required=False, allow_blank=True)
     referralType = serializers.CharField(source='referral_type', required=False, allow_blank=True)
@@ -546,12 +650,18 @@ class ReferralRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReferralRequest
         fields = [
-            'id', 'referralId', 'patientName', 'patientAge', 'patientGender', 'referralType', 'referralReason',
+            'id', 'referralId', 'patientId', 'patientName', 'patientAge', 'patientGender', 'referralType', 'referralReason',
             'referringFacility', 'receivingFacility', 'status', 'ambulanceId', 'referralDate', 'arrivalTime', 'outcome',
             'notes', 'isMedicalEvacuation', 'fundingSource', 'originCountry', 'destinationCountry', 'transportMode', 'cost',
             'transferCompliance', 'created_at', 'updated_at', 'is_active'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'is_active']
+
+    def validate_patientId(self, value):
+        tenant = self.context.get('tenant')
+        if value is not None and tenant is not None and value.tenant_id != tenant.id:
+            raise serializers.ValidationError('Patient does not belong to this tenant.')
+        return value
 
 
 class GrandRoundSerializer(serializers.ModelSerializer):

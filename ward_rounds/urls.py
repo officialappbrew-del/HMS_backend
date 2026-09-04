@@ -3,6 +3,10 @@ from rest_framework.routers import DefaultRouter
 from .views import WardRoundViewSet, HandoverNoteViewSet, GrandRoundViewSet, WardViewSet, BedViewSet
 from .admission_api import AdmissionManagementViewSet
 from .emergency_api import EmergencyCallViewSet, AmbulanceMissionViewSet, ReferralRequestViewSet
+from .feedback_api import (
+    AmbulanceViewSet, EmergencyBayViewSet, EmergencyCaseViewSet, PatientFeedbackViewSet, PatientSurveyViewSet,
+    PatientComplaintViewSet, QualityImprovementPlanViewSet,
+)
 from .roster_api import (
     DutyRosterViewSet,
     LeaveRequestViewSet,
@@ -34,6 +38,13 @@ router.register(r'research-outputs', ResearchOutputViewSet, basename='research-o
 router.register(r'teaching-activities', TeachingActivityViewSet, basename='teaching-activity')
 router.register(r'satisfaction-surveys', SatisfactionSurveyViewSet, basename='satisfaction-survey')
 router.register(r'performance-incidents', PerformanceIncidentViewSet, basename='performance-incident')
+router.register(r'emergency-bays', EmergencyBayViewSet, basename='emergency-bay')
+router.register(r'ambulances', AmbulanceViewSet, basename='ambulance')
+router.register(r'emergency-cases', EmergencyCaseViewSet, basename='emergency-case')
+router.register(r'patient-feedback', PatientFeedbackViewSet, basename='patient-feedback')
+router.register(r'patient-surveys', PatientSurveyViewSet, basename='patient-survey')
+router.register(r'patient-complaints', PatientComplaintViewSet, basename='patient-complaint')
+router.register(r'quality-improvement-plans', QualityImprovementPlanViewSet, basename='quality-improvement-plan')
 
 urlpatterns = [
     path('', include(router.urls)),

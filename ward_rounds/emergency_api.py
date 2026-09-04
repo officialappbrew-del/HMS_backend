@@ -5,11 +5,12 @@ from rest_framework.response import Response
 from rest_framework import viewsets
 
 from core.permissions import IsClinicalStaff
+from core.views import TenantScopedModelViewSet
 from .models import EmergencyCall, AmbulanceMission, ReferralRequest
 from .serializers import EmergencyCallSerializer, AmbulanceMissionSerializer, ReferralRequestSerializer
 
 
-class EmergencyCallViewSet(viewsets.ModelViewSet):
+class EmergencyCallViewSet(TenantScopedModelViewSet):
     queryset = EmergencyCall.objects.all()
     serializer_class = EmergencyCallSerializer
     permission_classes = [IsClinicalStaff]
@@ -35,7 +36,7 @@ class EmergencyCallViewSet(viewsets.ModelViewSet):
         return Response(EmergencyCallSerializer(emergency_call).data)
 
 
-class AmbulanceMissionViewSet(viewsets.ModelViewSet):
+class AmbulanceMissionViewSet(TenantScopedModelViewSet):
     queryset = AmbulanceMission.objects.all()
     serializer_class = AmbulanceMissionSerializer
     permission_classes = [IsClinicalStaff]
@@ -53,7 +54,7 @@ class AmbulanceMissionViewSet(viewsets.ModelViewSet):
         return Response(AmbulanceMissionSerializer(mission).data)
 
 
-class ReferralRequestViewSet(viewsets.ModelViewSet):
+class ReferralRequestViewSet(TenantScopedModelViewSet):
     queryset = ReferralRequest.objects.all()
     serializer_class = ReferralRequestSerializer
     permission_classes = [IsClinicalStaff]

@@ -119,6 +119,28 @@ class IsDoctorOrPharmacist(permissions.BasePermission):
         )
 
 
+class IsDoctorOrPharmacistOrTenantRootAdmin(permissions.BasePermission):
+    """Allow prescription access to clinicians and tenant-root admins."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if _get_user_role(request.user) in {'doctor', 'pharmacist'}:
+            return True
+        return IsTenantRootAdminOrGlobalAdmin().has_permission(request, view)
+
+
+class IsPharmacistOrTenantRootAdmin(permissions.BasePermission):
+    """Allow dispensing access to pharmacists and tenant-root admins."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if _get_user_role(request.user) == 'pharmacist':
+            return True
+        return IsTenantRootAdminOrGlobalAdmin().has_permission(request, view)
+
+
 class IsDoctorOrNurse(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and (

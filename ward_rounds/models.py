@@ -357,6 +357,8 @@ class EmergencyCall(BaseModel):
         COMPLETED = 'Completed', _('Completed')
         CANCELLED = 'Cancelled', _('Cancelled')
 
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, null=True, blank=True, related_name='emergency_calls')
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='emergency_calls')
     call_id = models.CharField(max_length=50, unique=True, blank=True)
     caller_name = models.CharField(max_length=200, blank=True)
     caller_phone = models.CharField(max_length=50, blank=True)
@@ -396,6 +398,8 @@ class AmbulanceMission(BaseModel):
         COMPLETED = 'Completed', _('Completed')
         CANCELLED = 'Cancelled', _('Cancelled')
 
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, null=True, blank=True, related_name='ambulance_missions')
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='ambulance_missions')
     mission_id = models.CharField(max_length=50, unique=True, blank=True)
     ambulance_id = models.CharField(max_length=100, blank=True)
     incident_type = models.CharField(max_length=100, blank=True)
@@ -424,6 +428,23 @@ class AmbulanceMission(BaseModel):
         super().save(*args, **kwargs)
 
 
+class Ambulance(BaseModel):
+    """Ambulance fleet vehicle configured for a tenant."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='ambulances')
+    ambulance_id = models.CharField(max_length=50)
+    vehicle_number = models.CharField(max_length=100)
+    ambulance_type = models.CharField(max_length=50, default='BLS')
+    status = models.CharField(max_length=50, default='Available')
+    location = models.JSONField(default=dict, blank=True)
+    fuel_level = models.PositiveSmallIntegerField(default=0)
+    mileage = models.PositiveIntegerField(default=0)
+    equipment = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        unique_together = [['tenant', 'ambulance_id']]
+        ordering = ['vehicle_number']
+
+
 class ReferralRequest(BaseModel):
     """Inter-facility referral and transport requests."""
     class ReferralStatus(models.TextChoices):
@@ -433,6 +454,8 @@ class ReferralRequest(BaseModel):
         ARRIVED = 'Arrived', _('Arrived')
         COMPLETED = 'Completed', _('Completed')
 
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, null=True, blank=True, related_name='referral_requests')
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='referral_requests')
     referral_id = models.CharField(max_length=50, unique=True, blank=True)
     patient_name = models.CharField(max_length=200, blank=True)
     patient_age = models.PositiveIntegerField(default=0)
@@ -565,3 +588,112 @@ class Bed(BaseModel):
 
     def __str__(self):
         return f"{self.ward.ward_name} - Bed {self.bed_number}"
+
+
+class EmergencyBay(BaseModel):
+    """Configured treatment bay for the emergency department."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='emergency_bays')
+    bay_id = models.CharField(max_length=50)
+    name = models.CharField(max_length=100)
+    bay_type = models.CharField(max_length=50, default='Standard')
+
+    class Meta:
+        unique_together = [['tenant', 'bay_id']]
+        ordering = ['name']
+
+
+class EmergencyCase(BaseModel):
+    """Emergency case and triage record."""
+    class Status(models.TextChoices):
+        WAITING_TRIAGE = 'waiting_triage', _('Waiting Triage')
+        TRIAGED = 'triaged', _('Triaged')
+        IN_TREATMENT = 'in_treatment', _('In Treatment')
+        DISCHARGED = 'discharged', _('Discharged')
+        ADMITTED = 'admitted', _('Admitted')
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='emergency_cases')
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='emergency_cases')
+    name = models.CharField(max_length=200)
+    age = models.PositiveIntegerField(default=0)
+    gender = models.CharField(max_length=30, blank=True)
+    presenting_complaint = models.TextField()
+    mode_of_arrival = models.CharField(max_length=50, default='Walk-in')
+    status = models.CharField(max_length=30, choices=Status.choices, default=Status.WAITING_TRIAGE)
+    triage_score = models.IntegerField(null=True, blank=True)
+    triage_color = models.CharField(max_length=20, blank=True)
+    triage_data = models.JSONField(default=dict, blank=True)
+    assigned_bay = models.ForeignKey(EmergencyBay, on_delete=models.SET_NULL, null=True, blank=True, related_name='cases')
+    assigned_physician = models.ForeignKey(TenantUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='emergency_cases_as_physician')
+    assigned_nurse = models.ForeignKey(TenantUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='emergency_cases_as_nurse')
+    arrival_time = models.DateTimeField(default=timezone.now)
+    triage_time = models.DateTimeField(null=True, blank=True)
+    treatment_start_time = models.DateTimeField(null=True, blank=True)
+    discharge_time = models.DateTimeField(null=True, blank=True)
+    disposition = models.CharField(max_length=30, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-arrival_time']
+        indexes = [models.Index(fields=['tenant', 'status', '-arrival_time'])]
+
+
+class PatientFeedbackRecord(BaseModel):
+    """Patient-submitted or staff-recorded feedback."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='feedback_records')
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='feedback_records')
+    patient_name = models.CharField(max_length=200, blank=True)
+    rating = models.PositiveSmallIntegerField(default=0)
+    sentiment = models.CharField(max_length=20, blank=True)
+    comments = models.TextField(blank=True)
+    department = models.CharField(max_length=200, blank=True)
+    submitted_at = models.DateTimeField(default=timezone.now)
+
+
+class PatientSurvey(BaseModel):
+    """Patient experience survey definition."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='patient_surveys')
+    title = models.CharField(max_length=300)
+    type = models.CharField(max_length=50, default='post_visit')
+    questions = models.JSONField(default=list, blank=True)
+    target_audience = models.CharField(max_length=100, default='all_patients')
+    distribution_method = models.CharField(max_length=30, default='sms')
+    scheduled_date = models.DateTimeField(null=True, blank=True)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=30, default='draft')
+    responses = models.PositiveIntegerField(default=0)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+
+class PatientComplaint(BaseModel):
+    """Patient complaint tracked through resolution."""
+    class Status(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        IN_PROGRESS = 'in_progress', _('In Progress')
+        RESOLVED = 'resolved', _('Resolved')
+        ESCALATED = 'escalated', _('Escalated')
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='patient_complaints')
+    patient = models.ForeignKey(Patient, on_delete=models.SET_NULL, null=True, blank=True, related_name='complaints')
+    patient_name = models.CharField(max_length=200, blank=True)
+    category = models.CharField(max_length=100)
+    priority = models.CharField(max_length=20, default='medium')
+    description = models.TextField()
+    department = models.CharField(max_length=200, blank=True)
+    contact_method = models.CharField(max_length=30, default='phone')
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    resolution = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+
+class QualityImprovementPlan(BaseModel):
+    """Quality improvement plan derived from patient experience data."""
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='quality_improvement_plans')
+    title = models.CharField(max_length=300)
+    source = models.CharField(max_length=200, blank=True)
+    objectives = models.TextField(blank=True)
+    responsible_person = models.CharField(max_length=200, blank=True)
+    target_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=30, default='active')
+    progress = models.PositiveSmallIntegerField(default=0)
+    actions = models.JSONField(default=list, blank=True)
+    milestones = models.JSONField(default=list, blank=True)

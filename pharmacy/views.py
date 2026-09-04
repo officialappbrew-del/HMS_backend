@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from .models import Drug, Supplier, Sale, SaleItem, Dispense
 from .serializers import DrugSerializer, SupplierSerializer, SaleSerializer, SaleCreateSerializer, DispenseSerializer
 from core.views import TenantScopedModelViewSet
-from core.permissions import IsPharmacist, IsPharmacistOrTenantAdmin
+from core.permissions import IsPharmacistOrTenantRootAdmin, IsPharmacistOrTenantAdmin
 
 
 class DrugViewSet(TenantScopedModelViewSet):
@@ -194,7 +194,7 @@ class SaleViewSet(TenantScopedModelViewSet):
 class DispenseViewSet(TenantScopedModelViewSet):
     queryset = Dispense.objects.all()
     serializer_class = DispenseSerializer
-    permission_classes = [IsPharmacist]
+    permission_classes = [IsPharmacistOrTenantRootAdmin]
 
     @transaction.atomic
     def perform_create(self, serializer):
