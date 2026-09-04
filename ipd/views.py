@@ -182,7 +182,9 @@ class StayChildViewSet(TenantScopedModelViewSet):
     permission_classes = [IsClinicalStaff]
 
     def get_queryset(self):
-        return super().get_queryset().filter(stay__tenant=self.get_tenant()).select_related('stay', 'stay__patient')
+        queryset = super().get_queryset().filter(stay__tenant=self.get_tenant()).select_related('stay', 'stay__patient')
+        stay_id = self.request.query_params.get('stay')
+        return queryset.filter(stay_id=stay_id) if stay_id else queryset
 
     def perform_create(self, serializer):
         stay = get_object_or_404(IPDStay, pk=serializer.validated_data['stay'].pk, tenant=self.get_tenant())
@@ -260,8 +262,40 @@ class IPDChargeViewSet(StayChildViewSet):
     queryset = IPDCharge.objects.all()
     serializer_class = IPDChargeSerializer
 
+    @transaction.atomic
     def perform_create(self, serializer):
-        serializer.save(posted_by=tenant_user(self.request))
+        charge = serializer.save(posted_by=tenant_user(self.request))
+        from billing.models import Invoice, InvoiceItem
+
+        invoice = Invoice.objects.filter(
+            tenant=charge.stay.tenant,
+            patient=charge.stay.patient,
+            status__in=['draft', 'issued', 'partially_paid', 'overdue'],
+        ).order_by('-invoice_date').first()
+        if not invoice:
+            invoice = Invoice.objects.create(
+                tenant=charge.stay.tenant,
+                patient=charge.stay.patient,
+                due_date=timezone.now(),
+                status='issued',
+                created_by=str(self.request.user) if self.request.user.is_authenticated else '',
+            )
+
+        line_total = charge.total
+        InvoiceItem.objects.create(
+            invoice=invoice,
+            item_type=charge.category if charge.category in {'consultation', 'drug', 'service', 'test', 'procedure', 'admission', 'other'} else 'other',
+            description=charge.description,
+            quantity=charge.quantity,
+            unit_price=charge.unit_price,
+            line_total=line_total,
+        )
+        invoice.subtotal = invoice.items.aggregate(total=Sum('line_total'))['total'] or 0
+        invoice.total_amount = invoice.subtotal + invoice.tax_amount - invoice.discount_amount
+        invoice.balance_due = invoice.total_amount - invoice.amount_paid
+        invoice.patient_amount = invoice.balance_due
+        invoice.status = 'issued'
+        invoice.save(update_fields=['subtotal', 'total_amount', 'balance_due', 'patient_amount', 'status', 'updated_at'])
 
     @action(detail=False, methods=['get'])
     def report(self, request):
