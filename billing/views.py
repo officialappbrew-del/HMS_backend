@@ -51,15 +51,17 @@ class IsPatientBillingStaff(permissions.BasePermission):
 @permission_classes([IsPatientBillingStaff])
 @transaction.atomic
 def record_patient_payment(request):
-    tenant = (
-        getattr(connection, 'tenant', None)
-        or getattr(request, 'tenant', None)
-        or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
-    )
     if getattr(request.user, 'is_patient', False):
         patient_id = getattr(request.user, 'patient_id', None) or getattr(request.user, 'id', None)
-        tenant = Patient.objects.filter(id=patient_id).values_list('tenant', flat=True).first()
-        tenant = Tenant.objects.filter(id=tenant).first() if tenant else None
+        patient = Patient.objects.select_related('tenant').filter(id=patient_id).first()
+        tenant = patient.tenant if patient else None
+    else:
+        user_tenant = getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        tenant = (
+            user_tenant
+            or getattr(request, 'tenant', None)
+            or getattr(connection, 'tenant', None)
+        )
     invoice_id = request.data.get('invoice')
     if not tenant or not invoice_id:
         return Response({'detail': 'Tenant and invoice context are required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -539,15 +541,19 @@ class InvoiceViewSet(TenantScopedModelViewSet):
         total_invoices = Invoice.objects.filter(tenant=tenant).count()
         total_revenue = Invoice.objects.filter(tenant=tenant).aggregate(total=Sum('total_amount'))['total'] or 0
         total_paid = Invoice.objects.filter(tenant=tenant).aggregate(total=Sum('amount_paid'))['total'] or 0
-        total_pending = Invoice.objects.filter(tenant=tenant, status__in=['issued', 'partially_paid']).aggregate(
+        total_pending = Invoice.objects.filter(tenant=tenant, status__in=['issued', 'partially_paid', 'overdue']).aggregate(
             total=Sum('balance_due')
         )['total'] or 0
         
         return Response({
             'total_invoices': total_invoices,
-            'total_revenue': float(total_revenue),
+            'total_revenue': float(total_paid),
+            'total_invoiced': float(total_revenue),
             'total_paid': float(total_paid),
             'total_pending': float(total_pending),
+            'invoiced_total': float(total_revenue),
+            'collected_total': float(total_paid),
+            'receivables': float(total_pending),
             'collection_rate': round((float(total_paid) / float(total_revenue) * 100), 1) if total_revenue > 0 else 0
         })
 
@@ -706,9 +712,10 @@ class FinancialAnalyticsView(APIView):
 
         # Revenue from invoices
         invoices = Invoice.objects.filter(tenant=tenant, invoice_date__gte=start_date)
-        total_revenue = float(invoices.aggregate(total=Sum('total_amount'))['total'] or 0)
+        invoiced_total = float(invoices.aggregate(total=Sum('total_amount'))['total'] or 0)
         total_paid = float(invoices.aggregate(total=Sum('amount_paid'))['total'] or 0)
-        total_pending = float(invoices.filter(status__in=['issued', 'partially_paid']).aggregate(
+        total_revenue = total_paid
+        total_pending = float(invoices.filter(status__in=['issued', 'partially_paid', 'overdue']).aggregate(
             total=Sum('balance_due')
         )['total'] or 0)
 
@@ -837,7 +844,10 @@ class FinancialAnalyticsView(APIView):
             'invoices': {
                 'total': invoices.count(),
                 'paid': invoices.filter(status='paid').count(),
-                'pending': invoices.filter(status__in=['issued', 'partially_paid']).count(),
+                'pending': invoices.filter(status__in=['issued', 'partially_paid', 'overdue']).count(),
+                'invoiced_total': invoiced_total,
+                'collected_total': float(total_paid),
+                'receivables': float(total_pending),
             }
         })
 

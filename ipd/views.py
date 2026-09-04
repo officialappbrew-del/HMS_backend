@@ -38,7 +38,8 @@ class IPDStayViewSet(TenantScopedModelViewSet):
         status_filter = self.request.query_params.get('status')
         patient_id = self.request.query_params.get('patient_id')
         if status_filter:
-            queryset = queryset.filter(status=status_filter)
+            statuses = [value.strip() for value in status_filter.split(',') if value.strip()]
+            queryset = queryset.filter(status__in=statuses)
         if patient_id:
             queryset = queryset.filter(patient_id=patient_id)
         return queryset
