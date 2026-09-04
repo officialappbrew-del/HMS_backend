@@ -9,6 +9,9 @@ class TenantAdminListSerializer(serializers.ModelSerializer):
     subscription_plan_name = serializers.CharField(
         source='subscription_plan.name', read_only=True, default=None
     )
+    max_users = serializers.IntegerField(
+        source='subscription_plan.max_users', read_only=True, default=0
+    )
     user_count = serializers.SerializerMethodField()
     patient_count = serializers.SerializerMethodField()
     state_name = serializers.CharField(source='state.name', read_only=True)
@@ -22,7 +25,7 @@ class TenantAdminListSerializer(serializers.ModelSerializer):
             'is_active', 'subscription_status', 'subscription_plan',
             'subscription_plan_name', 'monthly_fee', 'subscription_start_date',
             'subscription_end_date', 'facility_type', 'state_name',
-            'country_name', 'user_count', 'patient_count', 'created_at', 'root_admin',
+            'country_name', 'user_count', 'max_users', 'patient_count', 'created_at', 'root_admin',
         ]
 
     def get_user_count(self, obj):

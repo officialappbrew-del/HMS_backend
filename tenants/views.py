@@ -34,6 +34,7 @@ from .serializers import (
     BulkTenantUserUploadSerializer, CommunicationProfileSerializer, ExternalServiceProfileSerializer,
     _check_employee_id_globally_unique, SelfSignupSerializer,
 )
+from .utils import enforce_user_limit
 from core.permissions import IsSystemAdmin, IsTenantRootAdminOrGlobalAdmin
 from core.models import AuditLog, SystemSetting, Country, FacilityType
 from users.serializers import PasswordChangeSerializer
@@ -2349,6 +2350,7 @@ def _process_bulk_user_upload(upload_id):
                             validated_data['department'] = department
 
                         with transaction.atomic():
+                            enforce_user_limit(tenant)
                             user = TenantUser.objects.create(**validated_data)
                             user.set_password(password)
                             user.save()

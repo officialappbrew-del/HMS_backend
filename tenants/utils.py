@@ -5,6 +5,23 @@ from django.core.exceptions import PermissionDenied
 from .models import Tenant
 
 
+def enforce_user_limit(tenant, additional=1):
+    """Raise when adding users would exceed the tenant subscription limit."""
+    from django.db import transaction
+    from .models import TenantUser
+
+    with transaction.atomic():
+        locked_tenant = Tenant.objects.select_for_update().select_related('subscription_plan').get(pk=tenant.pk)
+        limit = locked_tenant.subscription_plan.max_users if locked_tenant.subscription_plan else 0
+        current = TenantUser.objects.filter(tenant=locked_tenant).count()
+        if limit > 0 and current + additional > limit:
+            raise ValueError(
+                f"User limit reached for the {locked_tenant.subscription_plan.name} plan. "
+                f"This tenant can have a maximum of {limit} users."
+            )
+        return locked_tenant, current, limit
+
+
 def get_current_tenant():
     """Get current tenant from thread local."""
     from django.db import connection

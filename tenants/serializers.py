@@ -4,6 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_email
 from django.utils import timezone
 from django.conf import settings
+from django.db import transaction
 import re
 import jwt
 
@@ -74,6 +75,8 @@ class TenantSerializer(serializers.ModelSerializer):
     country_name = serializers.CharField(source='country.name', read_only=True)
     facility_type_details = FacilityTypeSerializer(source='facility_type', read_only=True)
     subscription_plan_details = SubscriptionPlanSerializer(source='subscription_plan', read_only=True)
+    user_count = serializers.SerializerMethodField()
+    max_users = serializers.IntegerField(source='subscription_plan.max_users', read_only=True)
     root_admin = TenantRootAdminSerializer(write_only=True, required=False)
     subscription_start_date = serializers.SerializerMethodField()
     subscription_end_date = serializers.SerializerMethodField()
@@ -89,6 +92,9 @@ class TenantSerializer(serializers.ModelSerializer):
 
     def get_days_remaining(self, obj):
         return obj.days_remaining
+
+    def get_user_count(self, obj):
+        return obj.users.count()
 
     def get_is_subscription_expiring_soon(self, obj):
         return obj.is_subscription_expiring_soon
@@ -386,13 +392,23 @@ class TenantUserSerializer(serializers.ModelSerializer):
         if not validated_data.get('employee_id'):
             validated_data['employee_id'] = None
         
-        # Create user
-        user = TenantUser.objects.create(tenant=tenant, **validated_data)
-        
-        # Set password if provided
-        if password:
-            user.set_password(password)
-            user.save()
+        with transaction.atomic():
+            locked_tenant = Tenant.objects.select_for_update().select_related('subscription_plan').get(pk=tenant.pk)
+            user_limit = locked_tenant.subscription_plan.max_users if locked_tenant.subscription_plan else 0
+            current_users = TenantUser.objects.filter(tenant=locked_tenant).count()
+            if user_limit > 0 and current_users >= user_limit:
+                raise serializers.ValidationError({
+                    'non_field_errors': [
+                        f"User limit reached for the {locked_tenant.subscription_plan.name} plan. "
+                        f"This tenant can have a maximum of {user_limit} users."
+                    ]
+                })
+
+            user = TenantUser.objects.create(tenant=locked_tenant, **validated_data)
+
+            if password:
+                user.set_password(password)
+                user.save()
         
         return user
     

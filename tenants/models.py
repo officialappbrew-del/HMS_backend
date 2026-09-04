@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime
 from django.db import models
+from django.db import transaction
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -738,19 +739,23 @@ class TenantInvitation(BaseModel):
             self.save()
             raise ValueError("Invitation has expired")
         
-        # Create user as pending approval so admins must activate it before login.
-        user = TenantUser.objects.create(
-            tenant=self.tenant,
-            email=user_data.get('email', self.email),
-            username=user_data.get('username', self.email.split('@')[0]),
-            first_name=user_data.get('first_name', ''),
-            last_name=user_data.get('last_name', ''),
-            role=user_data.get('role', self.role),
-            department=self.department,
-            is_active=False,
-            created_by_invitation=True,
-            phone=user_data.get('phone', '')
-        )
+        from .utils import enforce_user_limit
+
+        with transaction.atomic():
+            enforce_user_limit(self.tenant)
+            # Create user as pending approval so admins must activate it before login.
+            user = TenantUser.objects.create(
+                tenant=self.tenant,
+                email=user_data.get('email', self.email),
+                username=user_data.get('username', self.email.split('@')[0]),
+                first_name=user_data.get('first_name', ''),
+                last_name=user_data.get('last_name', ''),
+                role=user_data.get('role', self.role),
+                department=self.department,
+                is_active=False,
+                created_by_invitation=True,
+                phone=user_data.get('phone', '')
+            )
         
         # Set password if provided
         password = user_data.get('password')
