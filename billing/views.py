@@ -479,7 +479,19 @@ class InvoiceViewSet(TenantScopedModelViewSet):
     permission_classes = [IsFinanceStaff]
 
     def get_queryset(self):
-        qs = super().get_queryset().select_related('patient', 'visit').prefetch_related('items', 'payments', 'insurance_claims')
+        tenant = self._get_request_tenant()
+        user = self.request.user
+        platform_access = bool(
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'role', None) in {'super_admin', 'system_admin'}
+        )
+        if tenant:
+            qs = self.queryset.filter(tenant=tenant)
+        elif platform_access:
+            qs = self.queryset.all()
+        else:
+            qs = self.queryset.none()
+        qs = qs.select_related('patient', 'visit').prefetch_related('items', 'payments', 'insurance_claims')
         patient_id = self.request.query_params.get('patient_id')
         status_filter = self.request.query_params.get('status')
         start_date = self.request.query_params.get('start_date')

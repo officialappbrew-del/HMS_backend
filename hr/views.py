@@ -33,6 +33,18 @@ def current_tenant(request):
     return getattr(request, 'tenant', None) or getattr(tenant_user, 'tenant', None)
 
 
+def has_platform_access(request):
+    user = request.user
+    return bool(getattr(user, 'is_superuser', False) or getattr(user, 'role', None) in {'super_admin', 'system_admin'})
+
+
+def scoped_queryset(queryset, request):
+    tenant = current_tenant(request)
+    if tenant:
+        return queryset.filter(tenant=tenant)
+    return queryset if has_platform_access(request) else queryset.none()
+
+
 class IsHrStaff(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(request.user.is_authenticated and current_role(request) in HR_ROLES)
@@ -43,7 +55,11 @@ class HrEmployeeListView(APIView):
 
     def get(self, request):
         tenant = current_tenant(request)
-        employees = TenantUser.objects.filter(tenant=tenant, employment_status__in=['active', 'on_leave']).select_related('department')
+        employees = TenantUser.objects.filter(employment_status__in=['active', 'on_leave']).select_related('department')
+        if tenant:
+            employees = employees.filter(tenant=tenant)
+        elif not has_platform_access(request):
+            employees = employees.none()
         return Response(EmployeeSummarySerializer(employees, many=True).data)
 
 
@@ -52,10 +68,15 @@ class HrSummaryView(APIView):
 
     def get(self, request):
         tenant = current_tenant(request)
-        attendance = AttendanceRecord.objects.filter(tenant=tenant)
-        leaves = LeaveApplication.objects.filter(tenant=tenant)
+        attendance = scoped_queryset(AttendanceRecord.objects.all(), request)
+        leaves = scoped_queryset(LeaveApplication.objects.all(), request)
+        employees = TenantUser.objects.filter(employment_status__in=['active', 'on_leave'])
+        if tenant:
+            employees = employees.filter(tenant=tenant)
+        elif not has_platform_access(request):
+            employees = employees.none()
         return Response({
-            'staff_count': TenantUser.objects.filter(tenant=tenant, employment_status__in=['active', 'on_leave']).count(),
+            'staff_count': employees.count(),
             'attendance': list(attendance.values('status').annotate(count=Count('id'))),
             'pending_leave_count': leaves.filter(status=LeaveApplication.Status.PENDING).count(),
             'approved_leave_count': leaves.filter(status=LeaveApplication.Status.APPROVED).count(),
@@ -69,6 +90,9 @@ class AttendanceViewSet(TenantScopedModelViewSet):
     permission_classes = [IsHrStaff]
     filterset_fields = ['employee', 'date', 'status']
 
+    def get_queryset(self):
+        return scoped_queryset(self.queryset, self.request)
+
     def perform_create(self, serializer):
         serializer.save(tenant=self._get_request_tenant(), approved_by=self.request.user)
 
@@ -78,6 +102,9 @@ class LeaveApplicationViewSet(TenantScopedModelViewSet):
     serializer_class = LeaveApplicationSerializer
     permission_classes = [IsHrStaff]
     filterset_fields = ['employee', 'leave_type', 'status']
+
+    def get_queryset(self):
+        return scoped_queryset(self.queryset, self.request)
 
     def perform_create(self, serializer):
         serializer.save(tenant=self._get_request_tenant(), employee_id=self.request.data.get('employee'))
@@ -109,6 +136,9 @@ class SalaryStructureViewSet(TenantScopedModelViewSet):
     serializer_class = SalaryStructureSerializer
     permission_classes = [IsHrStaff]
 
+    def get_queryset(self):
+        return scoped_queryset(self.queryset, self.request)
+
     def perform_create(self, serializer):
         serializer.save(tenant=self._get_request_tenant())
 
@@ -118,6 +148,9 @@ class PayrollRunViewSet(TenantScopedModelViewSet):
     serializer_class = PayrollRunSerializer
     permission_classes = [IsHrStaff]
     filterset_fields = ['month', 'status']
+
+    def get_queryset(self):
+        return scoped_queryset(self.queryset, self.request)
 
     def perform_create(self, serializer):
         tenant = self._get_request_tenant()

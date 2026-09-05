@@ -6,10 +6,11 @@ from .models import AttendanceRecord, LeaveApplication, PayrollLine, PayrollRun,
 
 class EmployeeSummarySerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
+    department_name = serializers.CharField(source='department.name', read_only=True, allow_null=True)
 
     class Meta:
         model = TenantUser
-        fields = ['id', 'employee_id', 'name', 'email', 'role', 'department', 'designation', 'employment_status']
+        fields = ['id', 'employee_id', 'name', 'email', 'role', 'department', 'department_name', 'designation', 'employment_status']
 
     def get_name(self, obj):
         return obj.get_full_name()

@@ -12,6 +12,15 @@ from .serializers import (AccountSerializer, AssetSerializer, JournalEntrySerial
                            TaxConfigurationSerializer, VendorPaymentSerializer, VendorSerializer)
 
 
+def accounts_scope(queryset, request):
+    tenant = getattr(request, 'tenant', None)
+    if tenant:
+        return queryset.filter(tenant=tenant)
+    if getattr(request.user, 'is_superuser', False) or getattr(request.user, 'role', None) in {'super_admin', 'system_admin'}:
+        return queryset
+    return queryset.none()
+
+
 class AccountsSummaryView(APIView):
     permission_classes = [IsFinanceStaff]
 
@@ -21,17 +30,28 @@ class AccountsSummaryView(APIView):
         except ObjectDoesNotExist:
             tenant_user = None
         tenant = getattr(request, 'tenant', None) or getattr(tenant_user, 'tenant', None)
-        invoices = Invoice.objects.filter(tenant=tenant)
-        payments = Payment.objects.filter(tenant=tenant, status='completed')
+        invoices = Invoice.objects.all()
+        payments = Payment.objects.filter(status='completed')
+        if tenant:
+            invoices = invoices.filter(tenant=tenant)
+            payments = payments.filter(tenant=tenant)
+        elif not (getattr(request.user, 'is_superuser', False) or getattr(request.user, 'role', None) in {'super_admin', 'system_admin'}):
+            invoices = invoices.none()
+            payments = payments.none()
+        journals = accounts_scope(JournalEntry.objects.all(), request)
+        vendors = accounts_scope(Vendor.objects.all(), request)
+        orders = accounts_scope(PurchaseOrder.objects.all(), request)
+        vendor_payments = accounts_scope(VendorPayment.objects.all(), request)
+        assets = accounts_scope(Asset.objects.filter(status=Asset.Status.ACTIVE), request)
         return Response({
             'invoice_count': invoices.count(),
             'outstanding_receivables': invoices.aggregate(total=Sum('balance_due'))['total'] or 0,
             'collected_amount': payments.aggregate(total=Sum('amount'))['total'] or 0,
-            'pending_journals': JournalEntry.objects.filter(tenant=tenant, status='draft').count(),
-            'vendor_count': Vendor.objects.filter(tenant=tenant).count(),
-            'purchase_order_count': PurchaseOrder.objects.filter(tenant=tenant).count(),
-            'vendor_payment_count': VendorPayment.objects.filter(tenant=tenant).count(),
-            'asset_count': Asset.objects.filter(tenant=tenant, status=Asset.Status.ACTIVE).count(),
+            'pending_journals': journals.filter(status='draft').count(),
+            'vendor_count': vendors.count(),
+            'purchase_order_count': orders.count(),
+            'vendor_payment_count': vendor_payments.count(),
+            'asset_count': assets.count(),
         })
 
 

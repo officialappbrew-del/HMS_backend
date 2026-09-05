@@ -195,7 +195,13 @@ class LeaveRequestViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        tenant = self._get_request_tenant()
+        user = self.request.user
+        platform_access = bool(
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'role', None) in {'super_admin', 'system_admin'}
+        )
+        queryset = self.queryset.filter(tenant=tenant) if tenant else (self.queryset.all() if platform_access else self.queryset.none())
         status_filter = self.request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
