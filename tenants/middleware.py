@@ -21,6 +21,8 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         '/api/v1/core/',
         '/api/v1/core/health/',
         '/api/v1/superadmin/',
+        '/api/v1/hr/',
+        '/api/v1/accounts/',
         '/api/v1/tenants/active-tenants/',
         '/api/v1/tenants/invitations/accept/',
         '/api/v1/tenants/invitations/accept',
@@ -81,11 +83,6 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         path = request.path_info
         is_public = any(path.startswith(url) for url in self.PUBLIC_SCHEMA_URLS)
 
-        if is_public:
-            connection.set_schema_to_public()
-            request.tenant = None
-            return
-
         # Priority: authenticated user > JWT token > X-Tenant-ID header > domain
         tenant = self._resolve_tenant_from_user(request)
         if tenant:
@@ -103,6 +100,11 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         if tenant:
             request.tenant = tenant
             connection.set_tenant(tenant)
+            return
+
+        if is_public:
+            connection.set_schema_to_public()
+            request.tenant = None
             return
 
         # Fall back to parent implementation for domain-based resolution

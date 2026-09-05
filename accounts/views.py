@@ -1,4 +1,5 @@
 from django.db.models import Sum
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import permissions, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -15,7 +16,11 @@ class AccountsSummaryView(APIView):
     permission_classes = [IsFinanceStaff]
 
     def get(self, request):
-        tenant = getattr(request, 'tenant', None) or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        try:
+            tenant_user = getattr(request.user, 'tenant_user', None)
+        except ObjectDoesNotExist:
+            tenant_user = None
+        tenant = getattr(request, 'tenant', None) or getattr(tenant_user, 'tenant', None)
         invoices = Invoice.objects.filter(tenant=tenant)
         payments = Payment.objects.filter(tenant=tenant, status='completed')
         return Response({

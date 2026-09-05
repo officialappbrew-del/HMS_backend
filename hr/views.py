@@ -1,5 +1,6 @@
 from decimal import Decimal
 from django.db import transaction
+from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Count, Q
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -17,7 +18,19 @@ HR_ROLES = {'admin', 'tenant_admin', 'hr_manager', 'super_admin', 'system_admin'
 
 
 def current_role(request):
-    return getattr(getattr(request.user, 'tenant_user', None), 'role', None) or getattr(request.user, 'role', None)
+    try:
+        tenant_user = getattr(request.user, 'tenant_user', None)
+    except ObjectDoesNotExist:
+        tenant_user = None
+    return getattr(tenant_user, 'role', None) or getattr(request.user, 'role', None)
+
+
+def current_tenant(request):
+    try:
+        tenant_user = getattr(request.user, 'tenant_user', None)
+    except ObjectDoesNotExist:
+        tenant_user = None
+    return getattr(request, 'tenant', None) or getattr(tenant_user, 'tenant', None)
 
 
 class IsHrStaff(permissions.BasePermission):
@@ -29,7 +42,7 @@ class HrEmployeeListView(APIView):
     permission_classes = [IsHrStaff]
 
     def get(self, request):
-        tenant = getattr(request, 'tenant', None) or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        tenant = current_tenant(request)
         employees = TenantUser.objects.filter(tenant=tenant, employment_status__in=['active', 'on_leave']).select_related('department')
         return Response(EmployeeSummarySerializer(employees, many=True).data)
 
@@ -38,7 +51,7 @@ class HrSummaryView(APIView):
     permission_classes = [IsHrStaff]
 
     def get(self, request):
-        tenant = getattr(request, 'tenant', None) or getattr(getattr(request.user, 'tenant_user', None), 'tenant', None)
+        tenant = current_tenant(request)
         attendance = AttendanceRecord.objects.filter(tenant=tenant)
         leaves = LeaveApplication.objects.filter(tenant=tenant)
         return Response({

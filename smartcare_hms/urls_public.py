@@ -40,6 +40,10 @@ urlpatterns = [
     path('api/v1/ndpr/', include('ndpr.urls')),
     path('api/v1/integration/', include('integration.urls')),
     path('api/v1/superadmin/', include('superadmin.urls')),
+    # Root-admin dashboard routes. Tenant context is still resolved by the
+    # middleware when a tenant JWT or X-Tenant-ID header is present.
+    path('api/v1/hr/', include('hr.urls')),
+    path('api/v1/accounts/', include('accounts.urls')),
 ]
 
 # Serve static and media files in development (public schema)
