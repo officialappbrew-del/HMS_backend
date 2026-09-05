@@ -1106,13 +1106,11 @@ class PatientVisitViewSet(TenantScopedModelViewSet):
         billing_items = request.data.get('billing_items', [])
         if billing_items:
             from billing.models import Invoice
-            invoice_number = f"INV-{timezone.now().strftime('%Y%m%d%H%M%S')}-{visit.id}"
             subtotal = sum([float(item.get('amount', 0) or 0) for item in billing_items])
             invoice = Invoice.objects.create(
                 tenant=visit.tenant,
                 patient=visit.patient,
                 visit=visit,
-                invoice_number=invoice_number,
                 due_date=timezone.now() + timezone.timedelta(days=30),
                 subtotal=subtotal,
                 tax_amount=0,

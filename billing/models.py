@@ -70,14 +70,30 @@ class Invoice(BaseModel):
 
     def save(self, *args, **kwargs):
         if not self.invoice_number:
-            if self.id:
-                self.invoice_number = f"INV-{self.id}"
-            else:
-                super().save(*args, **kwargs)
-                self.invoice_number = f"INV-{self.id}"
+            with transaction.atomic():
+                if not self.id:
+                    super().save(*args, **kwargs)
+                self.invoice_number = self._generate_invoice_number()
                 super().save(update_fields=['invoice_number'])
-                return
+            return
         super().save(*args, **kwargs)
+
+    def _generate_invoice_number(self):
+        now = timezone.now()
+        tenant_code = (self.tenant.code or 'TEN')[:3].upper()
+        prefix = f"{tenant_code}-INV-{now.strftime('%Y%m')}-"
+        last_invoice = Invoice.objects.filter(
+            tenant=self.tenant,
+            invoice_number__startswith=prefix
+        ).select_for_update().order_by('-id').first()
+        if last_invoice:
+            try:
+                seq = int(last_invoice.invoice_number.split('-')[-1]) + 1
+            except (ValueError, IndexError):
+                seq = 1
+        else:
+            seq = 1
+        return f"{prefix}{seq:04d}"
 
 
 class InvoiceItem(BaseModel):
