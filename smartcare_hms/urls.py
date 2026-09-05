@@ -58,6 +58,8 @@ urlpatterns = [
     path('api/v1/ndpr/', include('ndpr.urls')),
     path('api/v1/integration/', include('integration.urls')),
     path('api/v1/superadmin/', include('superadmin.urls')),
+    path('api/v1/hr/', include('hr.urls')),
+    path('api/v1/accounts/', include('accounts.urls')),
 ]
 
 # Serve static and media files in development

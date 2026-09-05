@@ -191,6 +191,8 @@ INSTALLED_APPS = [
     'integration',
     'ipd',
     'superadmin',
+    'hr',
+    'accounts',
     ]
 
 # ============================================
