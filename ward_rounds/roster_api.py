@@ -30,6 +30,16 @@ from .serializers import (
 from users.models import UserNotification
 
 
+def performance_scope(queryset, view):
+    tenant = view._get_request_tenant()
+    user = view.request.user
+    if tenant:
+        return queryset.filter(tenant=tenant)
+    if getattr(user, 'is_superuser', False) or getattr(user, 'role', None) in {'super_admin', 'system_admin'}:
+        return queryset
+    return queryset.none()
+
+
 class DutyRosterViewSet(TenantScopedModelViewSet):
     queryset = DutyRoster.objects.all()
     serializer_class = DutyRosterSerializer
@@ -297,7 +307,7 @@ class PerformanceAppraisalViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = performance_scope(self.queryset, self)
         staff_id = self.request.query_params.get('staff_id')
         if staff_id:
             queryset = queryset.filter(staff_id=staff_id)
@@ -310,7 +320,7 @@ class PerformanceAuditViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = performance_scope(self.queryset, self)
         department = self.request.query_params.get('department')
         if department:
             queryset = queryset.filter(department__icontains=department)
@@ -323,7 +333,7 @@ class ResearchOutputViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = performance_scope(self.queryset, self)
         staff_id = self.request.query_params.get('staff_id')
         if staff_id:
             queryset = queryset.filter(staff_id=staff_id)
@@ -336,7 +346,7 @@ class TeachingActivityViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = performance_scope(self.queryset, self)
         staff_id = self.request.query_params.get('staff_id')
         if staff_id:
             queryset = queryset.filter(staff_id=staff_id)
@@ -349,7 +359,7 @@ class SatisfactionSurveyViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = performance_scope(self.queryset, self)
         staff_id = self.request.query_params.get('staff_id')
         if staff_id:
             queryset = queryset.filter(staff_id=staff_id)
@@ -362,7 +372,7 @@ class PerformanceIncidentViewSet(TenantScopedModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = performance_scope(self.queryset, self)
         staff_id = self.request.query_params.get('staff_id')
         if staff_id:
             queryset = queryset.filter(staff_id=staff_id)
