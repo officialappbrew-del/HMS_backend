@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 from datetime import date
+import time
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIRequestFactory
 from django.utils import timezone
 from django.core.files.base import ContentFile
@@ -16,8 +17,11 @@ from .views import PatientViewSet
 
 
 class PatientMRNGenerationTests(TestCase):
+    def setUp(self):
+        Patient._tenant_mrn_counters.clear()
+
     def test_generate_mrn_returns_tenant_scoped_identifier(self):
-        tenant = SimpleNamespace(code='LAG')
+        tenant = Tenant(code='LAG')
         patient_a = Patient(tenant=tenant)
         patient_b = Patient(tenant=tenant)
 
@@ -31,7 +35,7 @@ class PatientMRNGenerationTests(TestCase):
         self.assertNotEqual(mrn_a, mrn_b)
 
     def test_generate_hospital_number_uses_distinct_tenant_scoped_format(self):
-        tenant = SimpleNamespace(code='LAG')
+        tenant = Tenant(code='LAG')
         patient = Patient(tenant=tenant)
         patient.mrn = patient.generate_mrn()
 
@@ -103,7 +107,7 @@ class PatientMPITests(TestCase):
         self.assertEqual(PatientMerge.objects.get(pk=merge_record.pk).status, 'unmerged')
 
 
-class PatientAuditTrailTests(TestCase):
+class PatientAuditTrailTests(TransactionTestCase):
     def setUp(self):
         country = Country.objects.create(name='Nigeria', code='NG')
         state = State.objects.create(name='Lagos', code='LA', country=country)
@@ -141,7 +145,7 @@ class PatientAuditTrailTests(TestCase):
             tenant=self.tenant,
             first_name='Grace',
             last_name='Bello',
-            date_of_birth='1992-02-12',
+            date_of_birth=date(1992, 2, 12),
             gender='female',
             phone='08022222222',
             email='grace@example.com',
@@ -153,6 +157,8 @@ class PatientAuditTrailTests(TestCase):
     def test_patient_retrieve_creates_view_patient_audit_log(self):
         user = SimpleNamespace(
             is_authenticated=True,
+            is_active=True,
+            id=1,
             is_superuser=False,
             role='admin',
             username='adminuser',
@@ -168,6 +174,14 @@ class PatientAuditTrailTests(TestCase):
         response = PatientViewSet.as_view({'get': 'retrieve'})(request, pk=self.patient.id)
 
         self.assertEqual(response.status_code, 200)
+        deadline = time.time() + 1
+        while time.time() < deadline and not AuditLog.objects.filter(
+            action='view_patient',
+            resource_type='patient',
+            resource_id=str(self.patient.id),
+            tenant=self.tenant,
+        ).exists():
+            time.sleep(0.05)
         self.assertTrue(
             AuditLog.objects.filter(
                 action='view_patient',
@@ -180,6 +194,8 @@ class PatientAuditTrailTests(TestCase):
     def test_patient_audit_history_returns_patient_specific_entries(self):
         user = SimpleNamespace(
             is_authenticated=True,
+            is_active=True,
+            id=1,
             is_superuser=False,
             role='admin',
             username='adminuser',

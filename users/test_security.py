@@ -22,7 +22,7 @@ import jwt
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.test import APIRequestFactory
 
-from .authentication import JWTAuthentication
+from .authentication import CookieJWTAuthentication, JWTAuthentication
 from .models import SecurityEvent
 from .views import logout_view
 
@@ -131,11 +131,14 @@ class JWTAuthenticationSecurityTests(TestCase):
         request.headers = {}
         request.META = {'REMOTE_ADDR': '127.0.0.1'}
         request.COOKIES = {'access_token': token}
+        request.tenant = None
 
         with mock.patch('users.authentication.Tenant.objects.filter') as tenant_filter, \
-             mock.patch('users.authentication.TenantUser.objects.filter') as tenant_user_filter:
+             mock.patch('users.authentication.TenantUser.objects.filter') as tenant_user_filter, \
+             mock.patch('users.authentication.TenantSetting.objects.filter') as tenant_setting_filter:
             tenant = mock.Mock(public_id='00000000-0000-0000-0000-000000000001', domain='tenant.local')
             tenant_filter.return_value.first.return_value = tenant
+            tenant_setting_filter.return_value.exists.return_value = False
             tenant_user = mock.Mock(
                 id=1,
                 is_active=True,
@@ -167,6 +170,94 @@ class JWTAuthenticationSecurityTests(TestCase):
             # The internal message must not reach the client.
             self.assertNotIn('db creds', str(ctx.exception))
             self.assertNotIn('sensitive', str(ctx.exception))
+
+    def test_tenant_token_is_rejected_on_a_different_tenant_host(self):
+        now = timezone.now()
+        tenant_id = '00000000-0000-0000-0000-000000000001'
+        token = jwt.encode(
+            {
+                'user_id': 1,
+                'is_tenant_user': True,
+                'tenant_public_id': tenant_id,
+                'tenant_id': 1,
+                'exp': int(now.timestamp()) + 300,
+                'token_version': 1,
+            },
+            'test-signing-key-1234567890',
+            algorithm='HS256',
+        )
+        request = self._make_request(token=token)
+        request.tenant = mock.Mock(pk=2)
+        token_tenant = mock.Mock(pk=1, public_id=tenant_id, domain='gar.localhost')
+
+        with mock.patch('users.authentication.Tenant.objects.filter') as tenant_filter, \
+             mock.patch('users.authentication.TenantUser.objects.filter') as user_filter:
+            tenant_filter.return_value.first.return_value = token_tenant
+            with self.assertRaises(AuthenticationFailed) as context:
+                self.auth.authenticate(request)
+
+        self.assertIn('different tenant', str(context.exception).lower())
+        user_filter.assert_not_called()
+
+    def test_stale_cookie_for_other_tenant_yields_to_bearer_authentication(self):
+        now = timezone.now()
+        tenant_id = '00000000-0000-0000-0000-000000000001'
+        cookie_token = jwt.encode(
+            {
+                'user_id': 1,
+                'is_tenant_user': True,
+                'tenant_public_id': tenant_id,
+                'exp': int(now.timestamp()) + 300,
+            },
+            'test-signing-key-1234567890',
+            algorithm='HS256',
+        )
+        request = self._make_request(token='fresh-bearer-token')
+        request.path = '/api/v1/core/dashboard-insights/'
+        request.tenant = mock.Mock(pk=2)
+        request.COOKIES = {'access_token': cookie_token}
+        token_tenant = mock.Mock(pk=1, public_id=tenant_id, domain='gar.localhost')
+
+        with mock.patch('users.authentication.Tenant.objects.filter') as tenant_filter:
+            tenant_filter.return_value.first.return_value = token_tenant
+            self.assertIsNone(CookieJWTAuthentication().authenticate(request))
+
+    def test_cookie_user_query_is_scoped_to_its_tenant(self):
+        now = timezone.now()
+        tenant_id = '00000000-0000-0000-0000-000000000001'
+        cookie_token = jwt.encode(
+            {
+                'user_id': 7,
+                'is_tenant_user': True,
+                'tenant_public_id': tenant_id,
+                'exp': int(now.timestamp()) + 300,
+            },
+            'test-signing-key-1234567890',
+            algorithm='HS256',
+        )
+        request = mock.Mock()
+        request.path = '/api/v1/core/dashboard-insights/'
+        request.headers = {}
+        request.META = {'REMOTE_ADDR': '127.0.0.1'}
+        request.COOKIES = {'access_token': cookie_token}
+        request.tenant = None
+        tenant = mock.Mock(pk=1, public_id=tenant_id, domain='xyz.localhost')
+        user = mock.Mock(
+            id=7, is_active=True, role='admin', token_version=1,
+            global_user=None, is_authenticated=False,
+        )
+        user_query = mock.Mock()
+        user_query.first.return_value = user
+
+        with mock.patch('users.authentication.Tenant.objects.filter') as tenant_filter, \
+             mock.patch('users.authentication.TenantUser.objects.filter', return_value=user_query) as user_filter, \
+             mock.patch('users.authentication.TenantSetting.objects.filter') as setting_filter:
+            tenant_filter.return_value.first.return_value = tenant
+            setting_filter.return_value.exists.return_value = False
+            authenticated = CookieJWTAuthentication().authenticate(request)
+
+        self.assertIs(authenticated[0], user)
+        self.assertEqual(user_filter.call_args.kwargs.get('tenant'), tenant)
 
 
 @override_settings(DEBUG=False)

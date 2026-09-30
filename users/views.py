@@ -532,6 +532,53 @@ class AuthenticationView(APIView):
     """Handle both global and tenant user authentication."""
     permission_classes = [permissions.AllowAny]
     throttle_classes = [AuthenticationThrottle]
+
+    def _resolve_tenant_domain_from_request(self, request):
+        explicit_value = request.headers.get('X-Subdomain') or request.headers.get('X-Tenant-Subdomain')
+        if explicit_value:
+            subdomain = explicit_value.strip().lower().rstrip('.')
+            if subdomain and subdomain != 'admin':
+                return subdomain
+
+        host = (request.get_host() or '').split(':')[0].lower().strip().rstrip('.')
+        if not host or host in {'localhost', '127.0.0.1', '0.0.0.0', '::1'}:
+            return None
+        if host.endswith('.localhost'):
+            subdomain = host[:-len('.localhost')]
+            if subdomain and subdomain.lower() != 'admin':
+                return subdomain
+        if '.' in host:
+            subdomain = host.split('.')[0]
+            if subdomain and subdomain.lower() not in {'admin', 'www'}:
+                return subdomain
+        return None
+
+    def _get_tenant_for_domain(self, tenant_domain):
+        if not tenant_domain:
+            return None
+
+        raw = str(tenant_domain).strip().lower().rstrip('.')
+        if not raw or raw in {'localhost', '127.0.0.1', '0.0.0.0', '::1'}:
+            return None
+
+        candidate_domains = {
+            raw,
+            raw.replace('.localhost', ''),
+            raw.removesuffix('.localhost'),
+            f'{raw.removesuffix(".localhost")}.localhost',
+        }
+
+        for domain in sorted(candidate_domains):
+            if not domain:
+                continue
+            tenant = Tenant.objects.filter(
+                models_Q(domain__iexact=domain)
+                | models_Q(domain__iexact=f'{domain}.localhost')
+                | models_Q(domain__iexact=domain.replace('.localhost', ''))
+            ).first()
+            if tenant:
+                return tenant
+        return None
     
     def post(self, request):
         data = request.data
@@ -545,14 +592,29 @@ class AuthenticationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        tenant_domain = data.get('tenant_domain')
+        request_tenant_domain = self._resolve_tenant_domain_from_request(request)
+        tenant_domain = request_tenant_domain or data.get('tenant_domain')
         tenant_id_from_body = data.get('tenant_id')
         tenant_id_from_header = request.headers.get('X-Tenant-ID')
-        tenant_id = tenant_id_from_body or tenant_id_from_header
+        tenant_id = tenant_id_from_header or tenant_id_from_body
+        requested_subdomain = (
+            request.headers.get('X-Subdomain')
+            or request.headers.get('X-Tenant-Subdomain')
+            or ''
+        ).strip().lower()
+        is_admin_request = (
+            requested_subdomain == 'admin'
+            or request.headers.get('X-Admin-Access', '').lower() == 'true'
+        )
 
-        if tenant_domain or tenant_id_from_body:
+        if not is_admin_request and (tenant_domain or tenant_id_from_body or request.headers.get('X-Subdomain')):
             logger.info(f"[AUTH] Routing to tenant auth: tenant_domain={tenant_domain} tenant_id={tenant_id_from_body}")
-            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id_from_body)
+            patient_result = self.authenticate_patient_user(
+                data, request, tenant_domain=tenant_domain, tenant_id=tenant_id
+            )
+            if patient_result:
+                return patient_result
+            return self.authenticate_tenant_user(data, request, tenant_domain, tenant_id)
 
         # An explicit user_id can identify a patient or tenant employee even
         # when the frontend also sends username/identifier aliases.
@@ -587,9 +649,8 @@ class AuthenticationView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
         elif tenant_domain:
-            try:
-                tenant = Tenant.objects.get(domain=tenant_domain)
-            except Tenant.DoesNotExist:
+            tenant = self._get_tenant_for_domain(tenant_domain)
+            if tenant is None:
                 return Response(
                     {'error': 'Tenant not found'},
                     status=status.HTTP_404_NOT_FOUND
@@ -623,14 +684,25 @@ class AuthenticationView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            user = TenantUser.objects.filter(is_active=True, employee_id=identifier).first()
+            if not self._employee_id_matches_tenant(identifier, tenant):
+                return Response(
+                    {'error': 'This user ID does not belong to the selected tenant.'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            user = TenantUser.objects.filter(tenant=tenant, is_active=True, employee_id__iexact=identifier).first()
             if not user:
-                user = TenantUser.objects.filter(is_active=True, username=identifier).first()
+                user = TenantUser.objects.filter(tenant=tenant, is_active=True, username__iexact=identifier).first()
+            if not user:
+                user = TenantUser.objects.filter(tenant=tenant, is_active=True, email__iexact=identifier).first()
             if not user:
                 archived_user = TenantUser.objects.filter(
+                    tenant=tenant,
                     is_active=False,
                 ).filter(
-                    models_Q(employee_id=identifier) | models_Q(username=identifier)
+                    models_Q(employee_id__iexact=identifier)
+                    | models_Q(username__iexact=identifier)
+                    | models_Q(email__iexact=identifier)
                 ).first()
                 if archived_user and archived_user.check_password(password):
                     return Response(
@@ -728,13 +800,13 @@ class AuthenticationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        tenant_domain = data.get('tenant_domain')
-        explicit_tenant_id = data.get('tenant_id')
+        tenant_domain = data.get('tenant_domain') or self._resolve_tenant_domain_from_request(request)
         header_tenant_id = request.headers.get('X-Tenant-ID')
+        explicit_tenant_id = header_tenant_id or data.get('tenant_id')
         tenant = None
 
         if tenant_domain:
-            tenant = Tenant.objects.filter(domain=tenant_domain).first()
+            tenant = self._get_tenant_for_domain(tenant_domain)
         elif explicit_tenant_id:
             tenant = Tenant.objects.filter(public_id=explicit_tenant_id).first()
             if tenant is None and str(explicit_tenant_id).isdigit():
@@ -758,21 +830,27 @@ class AuthenticationView(APIView):
             )
 
         if tenant:
+            if not self._employee_id_matches_tenant(user_id, tenant):
+                return Response(
+                    {'error': 'This user ID does not belong to the selected tenant.'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
             connection.set_schema(tenant.schema_name)
             try:
-                user = TenantUser.objects.filter(is_active=True, employee_id=user_id).first()
+                user = TenantUser.objects.filter(tenant=tenant, is_active=True, employee_id__iexact=user_id).first()
                 if not user:
-                    user = TenantUser.objects.filter(is_active=True, username=user_id).first()
+                    user = TenantUser.objects.filter(tenant=tenant, is_active=True, username__iexact=user_id).first()
                 if not user:
-                    user = TenantUser.objects.filter(is_active=True, email=user_id).first()
+                    user = TenantUser.objects.filter(tenant=tenant, is_active=True, email__iexact=user_id).first()
                 if user and user.check_password(password):
                     return self._build_tenant_login_response(tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email', request)
                 archived_user = TenantUser.objects.filter(
+                    tenant=tenant,
                     is_active=False,
                 ).filter(
-                    models_Q(employee_id=user_id) |
-                    models_Q(username=user_id) |
-                    models_Q(email=user_id)
+                    models_Q(employee_id__iexact=user_id) |
+                    models_Q(username__iexact=user_id) |
+                    models_Q(email__iexact=user_id)
                 ).first()
                 if archived_user and archived_user.check_password(password):
                     return Response(
@@ -801,11 +879,11 @@ class AuthenticationView(APIView):
         for tenant in active_tenants:
             connection.set_schema(tenant.schema_name)
             try:
-                user = TenantUser.objects.filter(is_active=True, employee_id=user_id).first()
+                user = TenantUser.objects.filter(tenant=tenant, is_active=True, employee_id__iexact=user_id).first()
                 if not user:
-                    user = TenantUser.objects.filter(is_active=True, username=user_id).first()
+                    user = TenantUser.objects.filter(tenant=tenant, is_active=True, username__iexact=user_id).first()
                 if not user:
-                    user = TenantUser.objects.filter(is_active=True, email=user_id).first()
+                    user = TenantUser.objects.filter(tenant=tenant, is_active=True, email__iexact=user_id).first()
                 if user and user.check_password(password):
                     possible_matches.append((tenant, user, 'employee_id' if user.employee_id == user_id else 'username' if user.username == user_id else 'email'))
             finally:
@@ -861,7 +939,7 @@ class AuthenticationView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    def authenticate_patient_user(self, data, request):
+    def authenticate_patient_user(self, data, request, tenant_domain=None, tenant_id=None):
         """Authenticate a patient using their identifier and password."""
         from django.db import connection
 
@@ -871,13 +949,23 @@ class AuthenticationView(APIView):
         if not identifier or password is None:
             return None
 
-        # Try to find the patient across all active tenants
+        scoped_tenant = None
+        if tenant_id:
+            scoped_tenant = Tenant.objects.filter(public_id=tenant_id).first()
+            if scoped_tenant is None and str(tenant_id).isdigit():
+                scoped_tenant = Tenant.objects.filter(id=int(tenant_id)).first()
+        elif tenant_domain:
+            scoped_tenant = self._get_tenant_for_domain(tenant_domain)
+
+        # Try only the resolved tenant when login comes from a tenant subdomain.
         active_tenants = Tenant.objects.filter(
             subscription_status__in=[
                 Tenant.SubscriptionStatus.ACTIVE,
                 Tenant.SubscriptionStatus.TRIAL,
             ]
         )
+        if scoped_tenant:
+            active_tenants = active_tenants.filter(pk=scoped_tenant.pk)
 
         for tenant in active_tenants:
             connection.set_schema(tenant.schema_name)
@@ -977,6 +1065,13 @@ class AuthenticationView(APIView):
             return None
 
         return Tenant.objects.filter(code__istartswith=tenant_prefix).first()
+
+    def _employee_id_matches_tenant(self, identifier, tenant):
+        """Reject generated employee IDs belonging to another tenant."""
+        parts = str(identifier or '').strip().upper().split('-')
+        if len(parts) != 3 or parts[1] not in {'ADM', 'DOC', 'NUR', 'PHA', 'LAB', 'REC', 'ACC', 'HR', 'INV'}:
+            return True
+        return str(tenant.code or '').strip().upper().startswith(parts[0])
 
     def _build_tenant_login_response(self, tenant, user, matched_by, request=None):
         if _tenant_requires_2fa(tenant):

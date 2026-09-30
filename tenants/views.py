@@ -47,6 +47,7 @@ import hashlib
 import datetime
 import urllib.request
 import urllib.error
+from urllib.parse import parse_qs, urlsplit
 import requests
 from django.core.signing import dumps as signed_dumps, loads as signed_loads, BadSignature, SignatureExpired
 from django.core.mail import send_mail
@@ -1323,7 +1324,8 @@ class TenantUserViewSet(viewsets.ModelViewSet):
             response.data['welcome_email_error'] = 'The tenant has not configured complete email credentials. The account was created, but no email was sent.'
             return response
 
-        login_url = f"{getattr(settings, 'FRONTEND_URL', '').rstrip('/')}/login"
+        from tenants.utils import build_tenant_login_url
+        login_url = build_tenant_login_url(staff.tenant)
         email_args = (
             staff.email,
             staff.get_full_name(),
@@ -1962,6 +1964,60 @@ class TenantInvitationViewSet(viewsets.ModelViewSet):
                 invited_by=user.tenant_user,
                 tenant=user.tenant_user.tenant
             )
+
+    @action(detail=True, methods=['post'], url_path='send-email')
+    def send_email(self, request, pk=None):
+        """Email the tenant-scoped signup URL for an existing invitation."""
+        invitation = self.get_object()
+        self._ensure_admin_or_hr(request.user, invitation)
+
+        if invitation.status != TenantInvitation.InvitationStatus.PENDING:
+            return Response({'error': 'Only pending invitations can be emailed.'}, status=status.HTTP_400_BAD_REQUEST)
+        if invitation.is_expired():
+            return Response({'error': 'This invitation has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        registration_url = str(request.data.get('registration_url') or '').strip()
+        parsed_url = urlsplit(registration_url)
+        from .utils import build_tenant_login_url
+        expected_url = urlsplit(build_tenant_login_url(invitation.tenant))
+        query = parse_qs(parsed_url.query)
+        if (
+            parsed_url.scheme != expected_url.scheme
+            or parsed_url.hostname != expected_url.hostname
+            or parsed_url.port != expected_url.port
+            or parsed_url.path != '/invitation-signup'
+            or query.get('token') != [invitation.token]
+            or not query.get('data', [''])[0]
+        ):
+            return Response({'error': 'The registration link does not match this tenant invitation.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        inviter_name = invitation.invited_by.get_full_name() or invitation.invited_by.username
+        subject = f'You are invited to join {invitation.tenant.name}'
+        try:
+            from tenants.communication import build_email_context, send_tenant_email
+            email_context = build_email_context(invitation.tenant, request=request, extra={
+                'invitee_email': invitation.email,
+                'inviter_name': inviter_name,
+                'role_label': invitation.get_role_display(),
+                'registration_url': registration_url,
+                'expires_at': timezone.localtime(invitation.expires_at),
+                'invitation_message': invitation.message,
+            })
+            sent_count = send_tenant_email(
+                tenant=invitation.tenant,
+                subject=subject,
+                message=render_to_string('tenants/invitation_email.txt', email_context),
+                recipient_list=[invitation.email],
+                html_message=render_to_string('tenants/invitation_email.html', email_context),
+                fail_silently=False,
+            )
+        except Exception:
+            logger.exception('Unable to email invitation %s for tenant %s', invitation.id, invitation.tenant_id)
+            return Response({'error': 'Unable to send the invitation email.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if not sent_count:
+            return Response({'error': 'The invitation email was not sent.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response({'detail': f'Invitation email sent to {invitation.email}.'})
     
     def destroy(self, request, *args, **kwargs):
         invitation = self.get_object()
@@ -2025,7 +2081,27 @@ class AcceptInvitationView(APIView):
         serializer = AcceptInvitationSerializer(data=request.data)
         
         if serializer.is_valid():
+            invitation = serializer.validated_data['invitation']
             user = serializer.save()
+
+            try:
+                from tenants.communication import build_email_context, send_tenant_email
+                email_context = build_email_context(invitation.tenant, request=request, extra={
+                    'invitee_name': user.get_full_name(),
+                    'invitee_email': user.email,
+                    'role_label': user.get_role_display(),
+                    'inviter_name': invitation.invited_by.get_full_name() or invitation.invited_by.username,
+                })
+                send_tenant_email(
+                    tenant=invitation.tenant,
+                    subject=f'Account request received - {invitation.tenant.name}',
+                    message=render_to_string('tenants/invitation_account_created_email.txt', email_context),
+                    recipient_list=[user.email],
+                    html_message=render_to_string('tenants/invitation_account_created_email.html', email_context),
+                    fail_silently=False,
+                )
+            except Exception:
+                logger.exception('Unable to send invitation signup confirmation for tenant %s', invitation.tenant_id)
             
             # Return user data
             user_serializer = TenantUserSerializer(user)
@@ -3005,12 +3081,35 @@ class PublicConfigurationView(APIView):
 
     def get(self, request):
         _ensure_public_schema()
+        tenant_subdomain = (
+            request.headers.get('X-Subdomain')
+            or request.headers.get('X-Tenant-Subdomain')
+            or request.query_params.get('tenant_subdomain')
+            or ''
+        ).strip().lower()
+        tenant = None
+        if tenant_subdomain and tenant_subdomain != 'admin':
+            tenant = Tenant.objects.filter(
+                Q(domain__iexact=tenant_subdomain)
+                | Q(domain__iexact=f'{tenant_subdomain}.localhost')
+            ).first()
+
         signups_open = _bool_setting(_get_system_setting('allow_new_signups', 'true'))
         configured_payment_method = _get_system_setting('subscription_payment_method', 'paystack')
         plans = SubscriptionPlan.objects.filter(is_active=True).order_by('display_order', 'price_monthly')
         countries = Country.objects.filter(is_active=True).order_by('name')
         facility_types = FacilityType.objects.all().order_by('name')
+        from tenants.communication import get_tenant_logo_url
+
         return Response({
+            'tenant': ({
+                'name': tenant.name,
+                'domain': tenant.domain,
+                'email': tenant.email,
+            'logo_url': get_tenant_logo_url(tenant, request=request),
+                'city': tenant.city,
+                'state': tenant.state.name if tenant.state else '',
+            } if tenant else None),
             'allow_new_signups': signups_open,
             'subscription_plans': [
                 {

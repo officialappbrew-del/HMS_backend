@@ -1,0 +1,11 @@
+Account request received - {{ tenant_name }}
+
+Hello {{ invitee_name }},
+
+Your account request for {{ tenant_name }} has been submitted successfully.
+
+Role: {{ role_label }}
+Status: Pending hospital administrator approval
+Account email: {{ invitee_email }}
+
+You will be able to sign in after the hospital administrator approves your account. If you have questions, contact your inviter, {{ inviter_name }}.

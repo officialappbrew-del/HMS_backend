@@ -498,6 +498,9 @@ class TenantUser(BaseModel):
         ]
     
     def save(self, *args, **kwargs):
+        if self.email:
+            self.email = self.email.strip().lower()
+
         # Auto-generate a login-friendly identifier if missing.
         if not self.employee_id:
             import uuid

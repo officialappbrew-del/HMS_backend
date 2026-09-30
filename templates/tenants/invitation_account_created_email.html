@@ -1,0 +1,19 @@
+{% extends "emails/base_email.html" %}
+
+{% block title %}Account request received - {{ tenant_name }}{% endblock %}
+{% block subtitle %}Registration submitted{% endblock %}
+
+{% block body %}
+<p style="margin:0 0 12px; font-size:16px; color:#1C2B27; font-weight:600;">Hello {{ invitee_name }},</p>
+<p style="margin:0 0 16px; font-size:14px; color:#3d554d; line-height:1.7;">
+  Your account request for <strong>{{ tenant_name }}</strong> has been submitted successfully.
+</p>
+<div class="highlight-box" style="background:#fbf6ea; border-left:4px solid #C79A3D; padding:16px 20px; border-radius:10px; margin:20px 0 18px;">
+  <p style="margin:0 0 8px; font-size:13px; color:#1C2B27;"><strong>Role:</strong> {{ role_label }}</p>
+  <p style="margin:0; font-size:13px; color:#1C2B27;"><strong>Status:</strong> Pending hospital administrator approval</p>
+</div>
+<p style="margin:0 0 16px; font-size:14px; color:#3d554d; line-height:1.7;">
+  You will be able to sign in after the hospital administrator approves your account. If you have questions, reply to your inviter, {{ inviter_name }}.
+</p>
+<p style="margin:0; font-size:13px; color:#4d625a;">Account email: {{ invitee_email }}</p>
+{% endblock %}

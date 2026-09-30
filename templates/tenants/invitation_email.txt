@@ -1,0 +1,15 @@
+Invitation to join {{ tenant_name }}
+
+Hello,
+
+{{ inviter_name }} has invited you to join {{ tenant_name }} as a {{ role_label }}.
+{% if invitation_message %}
+Message from the inviter: {{ invitation_message }}
+{% endif %}
+Complete your account setup:
+{{ registration_url|safe }}
+
+Invited email: {{ invitee_email }}
+Invitation expires: {{ expires_at|date:"d F Y, H:i" }}
+
+Your registration will be reviewed by the hospital administrator.

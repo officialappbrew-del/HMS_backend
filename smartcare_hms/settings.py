@@ -150,7 +150,8 @@ APP_NAME = config('APP_NAME', default='SmartCare HMS')
 # ALLOWED HOSTS - tightened per environment
 # ============================================
 # Only allow known hosts. In production always set ALLOWED_HOSTS explicitly.
-_DEFAULT_ALLOWED_HOSTS = 'localhost,127.0.0.1' if DEBUG else 'hms-backend-kmt1.onrender.com,admin.smartcarehms.local,lagosgeneral.smartcarehms.local'
+# Local development supports tenant subdomains like gcc.localhost and admin.localhost.
+_DEFAULT_ALLOWED_HOSTS = 'localhost,127.0.0.1,*.localhost' if DEBUG else 'hms-backend-kmt1.onrender.com,admin.smartcarehms.local,lagosgeneral.smartcarehms.local'
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default=_DEFAULT_ALLOWED_HOSTS).split(',')
 
 # ============================================
@@ -193,6 +194,7 @@ INSTALLED_APPS = [
     'superadmin',
     'hr',
     'accounts',
+    'messaging',
     ]
 
 # ============================================
@@ -210,8 +212,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'tenants.middleware.HeaderTenantMiddleware',  # Must run before default tenant middleware so X-Tenant-ID is honored
-    'django_tenants.middleware.main.TenantMainMiddleware',
+    'tenants.middleware.HeaderTenantMiddleware',
 
     # Logging middleware
     'smartcare_hms.logging_middleware.CorrelationIdMiddleware',

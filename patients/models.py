@@ -14,6 +14,10 @@ class Patient(BaseModel):
     """Patient model for healthcare facilities."""
     _tenant_mrn_counters = {}
 
+    class RegistrationSource(models.TextChoices):
+        SELF_SERVICE = 'self_service', _('Patient self-registration')
+        STAFF_DASHBOARD = 'staff_dashboard', _('Staff dashboard')
+
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='patients')
     
     # Identification
@@ -126,6 +130,12 @@ class Patient(BaseModel):
     
     # Metadata
     registered_by = models.ForeignKey('tenants.TenantUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='registered_patients')
+    registration_source = models.CharField(
+        max_length=30,
+        choices=RegistrationSource.choices,
+        default=RegistrationSource.STAFF_DASHBOARD,
+        db_index=True,
+    )
     registration_date = models.DateTimeField(auto_now_add=True)
     last_visit = models.DateTimeField(null=True, blank=True)
     

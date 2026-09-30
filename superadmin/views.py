@@ -93,6 +93,25 @@ def _count_patients_per_tenant():
     return counts
 
 
+def _get_root_admins_per_tenant(tenants):
+    """Fetch tenant admins from the shared TenantUser table in the public schema."""
+    tenant_ids = [tenant.id for tenant in tenants]
+    if not tenant_ids:
+        return {}
+
+    _ensure_public_schema()
+    root_admins = TenantUser.objects.filter(
+        tenant_id__in=tenant_ids,
+    ).filter(
+        Q(is_root_admin=True) | Q(role='admin')
+    ).order_by('tenant_id', '-is_root_admin', 'id')
+
+    admins = {}
+    for admin in root_admins:
+        admins.setdefault(admin.tenant_id, admin)
+    return admins
+
+
 class TenantAnalyticsView(APIView):
     """Per-tenant growth & resource usage analytics for the super admin dashboard.
 
@@ -415,15 +434,10 @@ class TenantAdminListView(APIView):
 
         queryset = queryset.order_by('-created_at')
 
-        # Prefetch root admins for all tenants on this page in one query
+        # TenantUser rows live in tenant schemas, so retrieve each admin there.
         paginator = SuperAdminPagination()
         page = paginator.paginate_queryset(queryset, request)
-        tenant_ids = [tenant.id for tenant in page]
-        root_admins_qs = TenantUser.objects.filter(
-            tenant_id__in=tenant_ids,
-            is_root_admin=True
-        ).only('id', 'tenant_id', 'first_name', 'last_name', 'email', 'phone', 'role', 'employee_id')
-        root_admins = {admin.tenant_id: admin for admin in root_admins_qs}
+        root_admins = _get_root_admins_per_tenant(page)
 
         serializer = TenantAdminListSerializer(
             page, many=True, context={'user_counts': user_counts, 'patient_counts': patient_counts, 'root_admins': root_admins}
@@ -445,12 +459,7 @@ class TenantAdminDetailView(APIView):
         if not tenant:
             return Response({'error': 'Tenant not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Prefetch root admin for this tenant
-        root_admin = TenantUser.objects.filter(
-            tenant=tenant,
-            is_root_admin=True
-        ).only('id', 'first_name', 'last_name', 'email', 'phone', 'role', 'employee_id').first()
-        tenant._root_admin = root_admin
+        tenant._root_admin = _get_root_admins_per_tenant([tenant]).get(tenant.id)
 
         # Get user and patient counts for this tenant
         user_counts = _count_users_per_tenant()
@@ -599,7 +608,8 @@ class TenantAdminCreateView(APIView):
                 delivery_mode = getattr(settings, 'EMAIL_DELIVERY_MODE', 'async')
                 logger.info(f'📧 Sending welcome email in {delivery_mode} mode to {admin_user.email} for tenant {tenant.name}')
                 try:
-                    login_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/') + '/login'
+                    from tenants.utils import build_tenant_login_url
+                    login_url = build_tenant_login_url(tenant)
                     email_args = (
                         admin_user.email,
                         admin_user.get_full_name() or admin_user.username,
@@ -756,7 +766,7 @@ class PlatformUserListView(APIView):
         for tenant in tenants_qs:
             try:
                 connection.set_schema(tenant.schema_name)
-                qs = TenantUser.objects.all()
+                qs = TenantUser.objects.filter(tenant_id=tenant.id)
                 search = request.query_params.get('search')
                 if search:
                     qs = qs.filter(
@@ -1034,7 +1044,7 @@ class PlatformPatientListView(APIView):
         for tenant in tenants_qs:
             try:
                 connection.set_schema(tenant.schema_name)
-                qs = Patient.objects.all()
+                qs = Patient.objects.filter(tenant_id=tenant.id)
                 search = request.query_params.get('search')
                 if search:
                     qs = qs.filter(

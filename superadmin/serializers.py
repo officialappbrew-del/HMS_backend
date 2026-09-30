@@ -4,6 +4,33 @@ from users.models import GlobalUser
 from core.models import AuditLog
 
 
+import re
+from urllib.parse import urlparse
+
+
+def normalize_tenant_domain(value):
+    """Normalize a frontend URL or raw host into the canonical tenant domain."""
+    if value is None:
+        return value
+
+    candidate = str(value).strip().lower()
+    if not candidate:
+        return candidate
+
+    if '://' in candidate:
+        parsed = urlparse(candidate)
+        candidate = parsed.netloc or parsed.path or candidate
+
+    candidate = candidate.split('/')[0].split('?')[0].split('#')[0]
+
+    if candidate and ':' in candidate and candidate.count(':') == 1:
+        host, port = candidate.rsplit(':', 1)
+        if port.isdigit():
+            candidate = host
+
+    return candidate.rstrip('.')
+
+
 class TenantAdminListSerializer(serializers.ModelSerializer):
     """Serializer for listing tenants in the super admin dashboard."""
     subscription_plan_name = serializers.CharField(
@@ -228,11 +255,11 @@ class TenantCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ['code', 'schema_name']
 
     def validate_domain(self, value):
-        import re
-        domain_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$'
-        if not re.match(domain_pattern, value):
+        normalized = normalize_tenant_domain(value)
+        domain_pattern = r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*(?:localhost|[a-zA-Z]{2,})$'
+        if not re.match(domain_pattern, normalized):
             raise serializers.ValidationError('Invalid domain format')
-        return value.lower()
+        return normalized
 
     def validate_registration_number(self, value):
         return value.upper()

@@ -1,0 +1,30 @@
+{% extends "emails/base_email.html" %}
+
+{% block title %}Invitation to join {{ tenant_name }}{% endblock %}
+{% block subtitle %}Your staff invitation{% endblock %}
+
+{% block body %}
+<p style="margin:0 0 12px; font-size:16px; color:#1C2B27; font-weight:600;">Hello,</p>
+<p style="margin:0 0 16px; font-size:14px; color:#3d554d; line-height:1.7;">
+  {{ inviter_name }} has invited you to join <strong>{{ tenant_name }}</strong> as a <strong>{{ role_label }}</strong>.
+</p>
+{% if invitation_message %}
+<div class="highlight-box" style="background:#fbf6ea; border-left:4px solid #C79A3D; padding:16px 20px; border-radius:10px; margin:20px 0 18px;">
+  <p style="margin:0; font-size:13px; color:#1C2B27;">{{ invitation_message }}</p>
+</div>
+{% endif %}
+<p style="margin:0 0 16px; font-size:14px; color:#3d554d; line-height:1.7;">
+  Use the button below to create your account. Your registration will be reviewed by the hospital administrator.
+</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:22px 0;">
+  <tr><td align="center">
+    <a href="{{ registration_url }}" class="btn-primary" style="display:inline-block; background:#16302A; color:#F6F2E7 !important; text-decoration:none; font-weight:600; font-size:14px; padding:12px 32px; border-radius:8px;">Create your account</a>
+  </td></tr>
+</table>
+<div class="highlight-box" style="background:#fbf6ea; border-left:4px solid #C79A3D; padding:16px 20px; border-radius:10px; margin:20px 0 18px;">
+  <p style="margin:0 0 8px; font-size:13px; color:#1C2B27;"><strong>Invited email:</strong> {{ invitee_email }}</p>
+  <p style="margin:0; font-size:13px; color:#1C2B27;"><strong>Invitation expires:</strong> {{ expires_at|date:"d F Y, H:i" }}</p>
+</div>
+<p style="margin:0 0 8px; font-size:13px; color:#4d625a; line-height:1.6;">If the button does not work, use this text link:</p>
+<p style="margin:0; font-size:13px; line-height:1.6;"><a href="{{ registration_url }}" style="color:#1d3d34; font-weight:600;">Complete your account setup</a></p>
+{% endblock %}

@@ -27,17 +27,20 @@ from .serializers import (
     PatientSerializer, PatientVisitSerializer, PatientDocumentSerializer,
     PatientAllergySerializer, PatientMedicationSerializer, AppointmentSerializer,
     PatientSearchSerializer, AppointmentScheduleSerializer, PatientLoginSerializer,
+    PatientRegistrationSerializer,
     BulkPatientUploadSerializer, PatientMergeSerializer,
     PatientPasswordResetRequestSerializer, PatientPasswordResetVerifySerializer,
     PatientPasswordResetConfirmSerializer, PatientPasswordChangeSerializer
 )
-from tenants.models import TenantUser, Department
+from tenants.models import Tenant, TenantUser, Department
+from tenants.communication import get_tenant_logo_url
 from core.views import TenantScopedModelViewSet
 from users.models import PasswordResetToken
 from users.tasks import send_password_reset_email_task, queue_login_notification
 from patients.tasks import send_appointment_email_task
 from smartcare_hms.email_delivery import dispatch_email_task
 from core.models import AuditLog
+from core.serializers import AuditLogSerializer
 from .services import merge_patients, unmerge_patient
 
 logger = logging.getLogger(__name__)
@@ -172,6 +175,54 @@ def patient_login(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def patient_register(request):
+    """Create a patient account for the tenant identified by the subdomain."""
+    tenant = getattr(request, 'tenant', None)
+    if not isinstance(tenant, Tenant):
+        tenant_id = request.headers.get('X-Tenant-ID')
+        if tenant_id:
+            tenant = Tenant.objects.filter(public_id=tenant_id).first()
+            if tenant is None and str(tenant_id).isdigit():
+                tenant = Tenant.objects.filter(id=int(tenant_id)).first()
+    if not tenant:
+        return Response(
+            {'detail': 'Open registration from the hospital subdomain.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if tenant.subscription_status not in {
+        Tenant.SubscriptionStatus.ACTIVE,
+        Tenant.SubscriptionStatus.TRIAL,
+    }:
+        return Response({'detail': 'This hospital is not accepting registrations.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    serializer = PatientRegistrationSerializer(data=request.data, context={'tenant': tenant})
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    patient = serializer.save()
+    refresh = RefreshToken()
+    refresh['patient_id'] = patient.id
+    refresh['tenant_id'] = str(tenant.public_id)
+    refresh['login_id'] = patient.login_id
+    refresh['is_patient'] = True
+    return Response({
+        'message': 'Patient account created successfully.',
+        'patient': {
+            'id': patient.id,
+            'login_id': patient.login_id,
+            'hospital_number': patient.hospital_number,
+            'mrn': patient.mrn,
+            'full_name': patient.get_full_name(),
+            'tenant': tenant.name,
+        },
+        'access_token': str(refresh.access_token),
+        'refresh_token': str(refresh),
+        'is_patient': True,
+    }, status=status.HTTP_201_CREATED)
+
+
 class PatientViewSet(TenantScopedModelViewSet):
     """ViewSet for managing patients."""
     queryset = Patient.objects.all()
@@ -208,7 +259,7 @@ class PatientViewSet(TenantScopedModelViewSet):
         return None
 
     def get_queryset(self):
-        queryset = super().get_queryset().select_related('tenant')
+        queryset = super().get_queryset().select_related('tenant', 'registered_by')
         
         search = self.request.query_params.get('search')
         if search:
@@ -257,6 +308,20 @@ class PatientViewSet(TenantScopedModelViewSet):
         state_filter = self.request.query_params.get('state')
         if state_filter:
             queryset = queryset.filter(state__iexact=state_filter)
+
+        source_filter = self.request.query_params.get('registration_source')
+        if source_filter in Patient.RegistrationSource.values:
+            queryset = queryset.filter(registration_source=source_filter)
+
+        ordering = self.request.query_params.get('ordering')
+        ordering_fields = {
+            'name': ('last_name', 'first_name', 'id'),
+            'state': ('state', 'last_name', 'first_name'),
+            '-registration_date': ('-registration_date', '-id'),
+            'registration_date': ('registration_date', 'id'),
+        }
+        if ordering in ordering_fields:
+            queryset = queryset.order_by(*ordering_fields[ordering])
         
         return queryset
 
@@ -673,12 +738,7 @@ class PatientViewSet(TenantScopedModelViewSet):
             tenant=patient.tenant, patient=patient
         ).prefetch_related('items', 'payments', 'insurance_claims').order_by('-invoice_date')
         tenant = patient.tenant
-        tenant_logo_url = ''
-        if tenant.logo:
-            try:
-                tenant_logo_url = request.build_absolute_uri(tenant.logo.url)
-            except Exception:
-                tenant_logo_url = ''
+        tenant_logo_url = get_tenant_logo_url(tenant, request=request)
 
         return Response({
             'patient': PatientSerializer(patient, context=self.get_serializer_context()).data,

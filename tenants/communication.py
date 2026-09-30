@@ -90,7 +90,8 @@ def get_tenant_logo_url(tenant, request=None):
     Falls back to the request's media URL when no request is provided, and
     builds an absolute URI so the logo renders inside email clients.
     """
-    logo = getattr(tenant, 'logo', None)
+    tenant_settings = getattr(tenant, 'settings_config', None)
+    logo = getattr(tenant_settings, 'system_logo', None) or getattr(tenant, 'logo', None)
     if not logo:
         return ''
 
@@ -119,8 +120,10 @@ def build_email_context(tenant, extra=None, request=None):
     merged with any ``extra`` context provided by the caller.
     """
     import datetime
+    from django.conf import settings
 
     context = {
+        'app_name': getattr(settings, 'APP_NAME', 'SmartCare HMS'),
         'tenant_name': getattr(tenant, 'name', None) or '',
         'tenant_logo_url': get_tenant_logo_url(tenant, request=request),
         'year': datetime.date.today().year,

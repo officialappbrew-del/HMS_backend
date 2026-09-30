@@ -1,13 +1,77 @@
 from types import SimpleNamespace
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
+from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory
 
 from core.models import Country, FacilityType, LGA, State
 from tenants.models import SubscriptionPlan, Tenant, TenantUser
+from tenants.communication import build_email_context, get_tenant_logo_url
 from tenants.serializers import TenantInvitationSerializer
 from tenants.views import TenantUserViewSet
+
+
+class TenantLogoUrlTests(SimpleTestCase):
+    def test_system_logo_url_is_used_before_tenant_logo(self):
+        tenant = SimpleNamespace(
+            settings_config=SimpleNamespace(
+                system_logo=SimpleNamespace(url='/media/tenant_system_logos/web_hosting_on_namecheap.png')
+            ),
+            logo=SimpleNamespace(url='/media/tenant_logos/old-logo.png'),
+        )
+        request = SimpleNamespace(
+            build_absolute_uri=lambda path: f'http://localhost:8000{path}'
+        )
+
+        logo_url = get_tenant_logo_url(tenant, request=request)
+
+        self.assertEqual(
+            logo_url,
+            'http://localhost:8000/media/tenant_system_logos/web_hosting_on_namecheap.png',
+        )
+
+
+class InvitationEmailTemplateTests(SimpleTestCase):
+    def setUp(self):
+        self.context = {
+            'app_name': 'SmartCare HMS',
+            'tenant_name': 'Garden City Clinic',
+            'tenant_logo_url': 'http://localhost:8000/media/tenant_system_logos/clinic-logo.png',
+            'year': 2026,
+            'invitee_email': 'doctor@example.com',
+            'inviter_name': 'Mimam Abraham',
+            'role_label': 'Doctor',
+            'registration_url': 'http://gcc.localhost:5173/invitation-signup?token=abc&data=xyz',
+            'expires_at': timezone.now(),
+            'invitation_message': 'Welcome to our team.',
+            'invitee_name': 'Ada Doctor',
+        }
+
+    def test_invitation_email_uses_tenant_branding_and_registration_url(self):
+        html = render_to_string('tenants/invitation_email.html', self.context)
+        text = render_to_string('tenants/invitation_email.txt', self.context)
+
+        self.assertIn('Garden City Clinic', html)
+        self.assertIn(self.context['tenant_logo_url'], html)
+        self.assertIn('Complete your account setup</a>', html)
+        self.assertNotIn(self.context['registration_url'], html)
+        self.assertIn('Complete your account setup:', text)
+        self.assertIn(self.context['registration_url'], text)
+
+    def test_created_account_email_explains_pending_approval(self):
+        html = render_to_string('tenants/invitation_account_created_email.html', self.context)
+        text = render_to_string('tenants/invitation_account_created_email.txt', self.context)
+
+        self.assertIn('Pending hospital administrator approval', html)
+        self.assertIn('Pending hospital administrator approval', text)
+
+    def test_shared_email_context_provides_app_name_for_base_template(self):
+        tenant = SimpleNamespace(name='Garden City Clinic', settings_config=None, logo=None)
+
+        context = build_email_context(tenant)
+
+        self.assertTrue(context['app_name'])
 
 
 class TenantPasswordRefreshActionTests(TestCase):

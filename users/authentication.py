@@ -201,12 +201,17 @@ class JWTAuthentication(authentication.BaseAuthentication):
                 if tenant is None:
                     return None
 
+                request_tenant = getattr(request, 'tenant', None)
+                if request_tenant is not None and request_tenant.pk != tenant.pk:
+                    raise AuthenticationFailed('This session belongs to a different tenant.')
+
                 user = None
 
                 # Prefer the database id if the token stores one.
                 if user_id is not None and str(user_id).isdigit():
                     user = TenantUser.objects.filter(
                         id=int(user_id),
+                        tenant=tenant,
                         is_active=True,
                     ).first()
 
@@ -363,12 +368,28 @@ class CookieJWTAuthentication(authentication.BaseAuthentication):
                 return None
 
             if payload.get('is_patient'):
+                tenant_public_id = payload.get('tenant_public_id') or payload.get('tenant_id')
+                tenant = None
+                if tenant_public_id:
+                    tenant = Tenant.objects.filter(public_id=tenant_public_id).first()
+                    if tenant is None and str(tenant_public_id).isdigit():
+                        tenant = Tenant.objects.filter(id=int(tenant_public_id)).first()
+                request_tenant = getattr(request, 'tenant', None)
+                if request_tenant is not None and (
+                    tenant is None or request_tenant.pk != tenant.pk
+                ):
+                    return None
                 patient_id = payload.get('patient_id') or user_id
                 if not patient_id:
                     return None
                 try:
-                    patient = Patient.objects.get(id=patient_id, is_active=True)
+                    patient_query = Patient.objects.filter(id=patient_id, is_active=True)
+                    if tenant is not None:
+                        patient_query = patient_query.filter(tenant=tenant)
+                    patient = patient_query.first()
                 except Patient.DoesNotExist:
+                    return None
+                if patient is None:
                     return None
                 patient.is_authenticated = True
                 patient.is_patient = True
@@ -383,18 +404,26 @@ class CookieJWTAuthentication(authentication.BaseAuthentication):
                     if tenant is None and str(tenant_public_id).isdigit():
                         tenant = Tenant.objects.filter(id=int(tenant_public_id)).first()
 
+                request_tenant = getattr(request, 'tenant', None)
+                if tenant is None or (
+                    request_tenant is not None and request_tenant.pk != tenant.pk
+                ):
+                    return None
+
                 user = None
                 if user_id is not None and str(user_id).isdigit():
-                    user = TenantUser.objects.filter(id=int(user_id), is_active=True).first()
+                    user = TenantUser.objects.filter(
+                        id=int(user_id), tenant=tenant, is_active=True
+                    ).first()
                 if user is None:
-                    user_qs = TenantUser.objects.filter(employee_id=str(user_id), is_active=True)
-                    if tenant:
-                        user_qs = user_qs.filter(tenant=tenant)
+                    user_qs = TenantUser.objects.filter(
+                        employee_id__iexact=str(user_id), tenant=tenant, is_active=True
+                    )
                     user = user_qs.first()
                 if user is None:
-                    user_qs = TenantUser.objects.filter(username=str(user_id), is_active=True)
-                    if tenant:
-                        user_qs = user_qs.filter(tenant=tenant)
+                    user_qs = TenantUser.objects.filter(
+                        username__iexact=str(user_id), tenant=tenant, is_active=True
+                    )
                     user = user_qs.first()
                 if not user:
                     return None

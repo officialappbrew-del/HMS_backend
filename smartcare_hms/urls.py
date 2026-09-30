@@ -60,6 +60,7 @@ urlpatterns = [
     path('api/v1/superadmin/', include('superadmin.urls')),
     path('api/v1/hr/', include('hr.urls')),
     path('api/v1/accounts/', include('accounts.urls')),
+    path('api/v1/messaging/', include('messaging.urls')),
 ]
 
 # Serve static and media files in development

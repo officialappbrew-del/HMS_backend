@@ -1,9 +1,12 @@
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+from django.conf import settings
 from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.conf import settings
 
 from smartcare_hms.throttling import AuthenticationThrottle
+from tenants.models import Tenant
 from users.tasks import send_login_notification_email_task
 
 
@@ -84,6 +87,18 @@ class TenantWelcomeEmailQueueingTests(TestCase):
 
 
 class AuthenticationThrottleTests(SimpleTestCase):
+    def test_tenant_create_domain_accepts_frontend_urls_and_subdomains(self):
+        from superadmin.serializers import TenantCreateSerializer
+
+        self.assertEqual(
+            TenantCreateSerializer().validate_domain('http://gcc.localhost:5173'),
+            'gcc.localhost',
+        )
+        self.assertEqual(
+            TenantCreateSerializer().validate_domain('https://lagosgeneral.example.com'),
+            'lagosgeneral.example.com',
+        )
+
     def test_authentication_throttle_allows_requests_without_crashing(self):
         throttle = AuthenticationThrottle()
         request = RequestFactory().post(
@@ -104,6 +119,7 @@ class AuthenticationThrottleTests(SimpleTestCase):
 
         cache_key = throttle.get_cache_key(request, None)
         self.assertIn('auth_user:demo', cache_key)
+
 
     @patch('users.tasks.send_mail')
     def test_global_admin_login_notification_uses_global_email_credentials(self, mock_send_mail):
@@ -145,3 +161,80 @@ class AuthenticationThrottleTests(SimpleTestCase):
         _queue_login_notification_async('admin@example.com', is_global_user=True)
 
         mock_warning.assert_called_once()
+
+
+class TenantLoginIsolationTests(SimpleTestCase):
+    def setUp(self):
+        from users.views import AuthenticationView
+
+        self.view = AuthenticationView()
+        self.tenant = SimpleNamespace(
+            code='XYZ7566',
+            domain='xyz.localhost',
+            schema_name='tenant_xyz7566',
+            public_id='tenant-public-id',
+            name='XYZ Clinic',
+            subscription_status=Tenant.SubscriptionStatus.ACTIVE,
+        )
+
+    def test_only_header_aware_tenant_middleware_is_installed(self):
+        self.assertIn('tenants.middleware.HeaderTenantMiddleware', settings.MIDDLEWARE)
+        self.assertNotIn('django_tenants.middleware.main.TenantMainMiddleware', settings.MIDDLEWARE)
+
+    def test_gar_employee_id_is_rejected_for_xyz_tenant(self):
+        self.assertFalse(
+            self.view._employee_id_matches_tenant('GAR-ADM-093551', self.tenant)
+        )
+
+    def test_host_tenant_overrides_stale_jwt_and_browser_tenant(self):
+        from tenants.middleware import HeaderTenantMiddleware
+
+        middleware = HeaderTenantMiddleware(lambda request: None)
+        request = RequestFactory().get('/api/v1/patients/patients/', HTTP_HOST='xyz.localhost')
+        with patch.object(middleware, '_resolve_tenant_from_host', return_value=self.tenant), \
+             patch.object(middleware, '_resolve_tenant_from_user') as user_resolver, \
+             patch.object(middleware, '_resolve_tenant_from_jwt') as jwt_resolver, \
+             patch.object(middleware, '_resolve_tenant_from_header') as header_resolver, \
+             patch('tenants.middleware.connection.set_tenant') as set_tenant:
+            middleware.process_request(request)
+
+        self.assertIs(request.tenant, self.tenant)
+        user_resolver.assert_not_called()
+        jwt_resolver.assert_not_called()
+        header_resolver.assert_not_called()
+        set_tenant.assert_called_once_with(self.tenant)
+
+    def test_localhost_request_resolves_tenant_from_subdomain_header(self):
+        from tenants.middleware import HeaderTenantMiddleware
+
+        middleware = HeaderTenantMiddleware(lambda request: None)
+        request = RequestFactory().get(
+            '/api/v1/patients/patients/',
+            HTTP_HOST='localhost:8000',
+            HTTP_X_SUBDOMAIN='xyz',
+        )
+        with patch('tenants.middleware.Tenant.objects.filter') as tenant_filter:
+            tenant_filter.return_value.first.return_value = self.tenant
+            resolved = middleware._resolve_tenant_from_host(request)
+
+        self.assertIs(resolved, self.tenant)
+        self.assertIn('domain__iexact', str(tenant_filter.call_args))
+
+    def test_tenant_login_filters_shared_user_table_by_tenant(self):
+        request = RequestFactory().post('/api/v1/auth/login/')
+        empty_queryset = MagicMock()
+        empty_queryset.first.return_value = None
+        empty_queryset.filter.return_value = empty_queryset
+
+        with patch.object(self.view, '_get_tenant_for_domain', return_value=self.tenant), \
+             patch('django.db.connection.set_schema'), \
+             patch('users.views.TenantUser.objects.filter', return_value=empty_queryset) as user_filter:
+            response = self.view.authenticate_tenant_user(
+                {'user_id': 'mimam@example.com', 'password': 'wrong-password'},
+                request,
+                tenant_domain='xyz.localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(user_filter.call_args_list)
+        self.assertTrue(all(call.kwargs.get('tenant') is self.tenant for call in user_filter.call_args_list))

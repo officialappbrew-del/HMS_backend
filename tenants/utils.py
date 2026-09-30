@@ -1,8 +1,47 @@
+from urllib.parse import urlsplit, urlunsplit
+
 from django.db import connection
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 
 from .models import Tenant
+
+
+def build_tenant_login_url(tenant):
+    """Build the tenant-specific frontend login URL for email links."""
+    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+    frontend_parts = urlsplit(frontend_url)
+    tenant_domain = str(getattr(tenant, 'domain', '') or '').strip().lower()
+
+    if '://' in tenant_domain:
+        tenant_parts = urlsplit(tenant_domain)
+        tenant_domain = tenant_parts.hostname or ''
+        tenant_port = tenant_parts.port
+    else:
+        tenant_parts = None
+        tenant_domain = tenant_domain.split('/')[0].split('?')[0].split('#')[0]
+        tenant_port = None
+        if ':' in tenant_domain and tenant_domain.count(':') == 1:
+            tenant_domain, raw_port = tenant_domain.rsplit(':', 1)
+            tenant_port = int(raw_port) if raw_port.isdigit() else None
+
+    if not tenant_domain:
+        return f'{frontend_url}/login'
+
+    if '.' not in tenant_domain:
+        base_hostname = frontend_parts.hostname or 'localhost'
+        tenant_domain = f'{tenant_domain}.{base_hostname}'
+
+    scheme = 'http' if tenant_domain.endswith('.localhost') else (frontend_parts.scheme or 'https')
+    port = tenant_port
+    if port is None and tenant_domain.endswith('.localhost'):
+        port = frontend_parts.port or 5173
+
+    netloc = tenant_domain
+    if port:
+        netloc = f'{netloc}:{port}'
+
+    return urlunsplit((scheme, netloc, '/login', '', ''))
 
 
 def enforce_user_limit(tenant, additional=1):

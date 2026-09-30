@@ -19,6 +19,8 @@ class PatientSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     age_display = serializers.SerializerMethodField()
     tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+    registered_by_name = serializers.SerializerMethodField()
+    registered_by_role = serializers.SerializerMethodField()
     password = serializers.CharField(write_only=True, required=False)
     hospital_number = serializers.CharField(required=False, allow_blank=True)
     mrn = serializers.CharField(required=False, read_only=True)
@@ -33,7 +35,10 @@ class PatientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Patient
         fields = '__all__'
-        read_only_fields = ['registration_date', 'age', 'tenant', 'registered_by', 'mrn']
+        read_only_fields = [
+            'registration_date', 'registration_source', 'registered_by',
+            'registered_by_name', 'registered_by_role', 'age', 'tenant', 'mrn',
+        ]
         extra_kwargs = {
             'password': {'write_only': True}
         }
@@ -70,6 +75,7 @@ class PatientSerializer(serializers.ModelSerializer):
             if tenant_user is not None:
                 validated_data['registered_by'] = tenant_user
                 validated_data.setdefault('tenant', getattr(tenant_user, 'tenant', None))
+                validated_data['registration_source'] = Patient.RegistrationSource.STAFF_DASHBOARD
         with transaction.atomic():
             patient = Patient.objects.create(**validated_data)
             if initial_charges:
@@ -121,6 +127,14 @@ class PatientSerializer(serializers.ModelSerializer):
 
     def get_age_display(self, obj):
         return obj.get_age_display()
+
+    def get_registered_by_name(self, obj):
+        if not obj.registered_by:
+            return ''
+        return obj.registered_by.get_full_name() or obj.registered_by.username or obj.registered_by.employee_id
+
+    def get_registered_by_role(self, obj):
+        return obj.registered_by.role if obj.registered_by else ''
 
     def validate_email(self, value):
         if value and not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', value):
@@ -186,6 +200,41 @@ class PatientLoginSerializer(serializers.Serializer):
             return data
 
         raise serializers.ValidationError("Invalid patient identifier or password.")
+
+
+class PatientRegistrationSerializer(serializers.ModelSerializer):
+    """Public self-registration serializer for patients on a tenant subdomain."""
+    password = serializers.CharField(write_only=True, min_length=8)
+    password_confirm = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = Patient
+        fields = [
+            'first_name', 'last_name', 'middle_name', 'date_of_birth',
+            'gender', 'phone', 'email', 'address', 'city', 'state',
+            'country', 'password', 'password_confirm',
+        ]
+
+    def validate(self, attrs):
+        password = attrs.pop('password')
+        password_confirm = attrs.pop('password_confirm')
+        if password != password_confirm:
+            raise serializers.ValidationError({'password_confirm': 'Passwords do not match.'})
+        validate_password(password)
+        attrs['password'] = password
+        return attrs
+
+    def create(self, validated_data):
+        password = validated_data.pop('password')
+        tenant = self.context['tenant']
+        patient = Patient.objects.create(
+            tenant=tenant,
+            registration_source=Patient.RegistrationSource.SELF_SERVICE,
+            **validated_data,
+        )
+        patient.set_password(password)
+        patient.save(update_fields=['password'])
+        return patient
 
 
 class PatientVisitSerializer(serializers.ModelSerializer):

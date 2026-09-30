@@ -4,6 +4,7 @@ This allows testing without configuring DNS entries.
 """
 from django_tenants.middleware.main import TenantMainMiddleware
 from django.db import connection
+from django.db.models import Q
 from django.conf import settings
 from tenants.models import Tenant
 import threading
@@ -78,33 +79,94 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
                 return request.user.tenant
         return None
 
+    def _resolve_tenant_from_host(self, request):
+        host = (request.get_host() or '').split(':')[0].lower().strip().rstrip('.')
+        explicit_subdomain = (
+            request.headers.get('X-Subdomain')
+            or request.headers.get('X-Tenant-Subdomain')
+            or ''
+        ).strip().lower()
+
+        if not host or host in {'localhost', '127.0.0.1', '0.0.0.0', '::1'}:
+            if not explicit_subdomain or explicit_subdomain == 'admin':
+                return None
+            return Tenant.objects.filter(
+                Q(domain__iexact=explicit_subdomain)
+                | Q(domain__iexact=f'{explicit_subdomain}.localhost')
+            ).first()
+
+        candidates = []
+        if explicit_subdomain:
+            candidates.append(explicit_subdomain)
+
+        if host.endswith('.localhost'):
+            subdomain = host[:-len('.localhost')]
+            if subdomain and subdomain.lower() != 'admin':
+                candidates.extend([subdomain, host])
+        elif '.' in host:
+            subdomain = host.split('.')[0]
+            if subdomain and subdomain.lower() not in {'admin', 'www'}:
+                candidates.extend([subdomain, host])
+
+        if host and host.lower() not in {'admin', 'www'}:
+            candidates.append(host)
+
+        seen = set()
+        for candidate in candidates:
+            cleaned = candidate.strip().lower().rstrip('.')
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+
+            tenant = Tenant.objects.filter(
+                Q(domain__iexact=cleaned)
+                | Q(domain__iexact=f'{cleaned}.localhost')
+                | Q(domain__iexact=cleaned.replace('.localhost', ''))
+            ).first()
+            if tenant:
+                return tenant
+
+        return None
+
     def process_request(self, request):
         """Override to support header-based tenant resolution."""
         path = request.path_info
         is_public = any(path.startswith(url) for url in self.PUBLIC_SCHEMA_URLS)
 
-        # Priority: authenticated user > JWT token > X-Tenant-ID header > domain
+        # The requested tenant host/subdomain must win over stale user, JWT, or
+        # browser-stored tenant context when switching between tenant sites.
+        tenant = self._resolve_tenant_from_host(request)
+        if tenant:
+            request.tenant = tenant
+            connection.set_tenant(tenant)
+            self.setup_url_routing(request)
+            return
+
         tenant = self._resolve_tenant_from_user(request)
         if tenant:
             request.tenant = tenant
             connection.set_tenant(tenant)
+            self.setup_url_routing(request)
             return
 
         tenant = self._resolve_tenant_from_jwt(request)
         if tenant:
             request.tenant = tenant
             connection.set_tenant(tenant)
+            self.setup_url_routing(request)
             return
 
         tenant = self._resolve_tenant_from_header(request)
         if tenant:
             request.tenant = tenant
             connection.set_tenant(tenant)
+            self.setup_url_routing(request)
             return
 
         if is_public:
             connection.set_schema_to_public()
             request.tenant = None
+            self.setup_url_routing(request, force_public=True)
             return
 
         # Fall back to parent implementation for domain-based resolution
