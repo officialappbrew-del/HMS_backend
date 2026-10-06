@@ -220,22 +220,23 @@ class TenantLoginIsolationTests(SimpleTestCase):
         self.assertIs(resolved, self.tenant)
         self.assertIn('domain__iexact', str(tenant_filter.call_args))
 
-    def test_render_host_resolves_full_tenant_domain_from_subdomain_header(self):
+    def test_patient_login_uses_tenant_schema_from_subdomain_header(self):
         from tenants.middleware import HeaderTenantMiddleware
 
         self.tenant.domain = 'hospitalmanager-beta.vercel.app'
         middleware = HeaderTenantMiddleware(lambda request: None)
         request = RequestFactory().get(
-            '/api/v1/tenants/settings/current/',
+            '/api/v1/patients/login/',
             HTTP_HOST='hms-backend-l09g.onrender.com',
             HTTP_X_SUBDOMAIN='hospitalmanager-beta',
         )
-        with patch('tenants.middleware.Tenant.objects.filter') as tenant_filter:
+        with patch('tenants.middleware.Tenant.objects.filter') as tenant_filter, \
+             patch('tenants.middleware.connection.set_tenant') as set_tenant:
             tenant_filter.return_value.first.return_value = self.tenant
+            middleware.process_request(request)
 
-            resolved = middleware._resolve_tenant_from_host(request)
-
-        self.assertIs(resolved, self.tenant)
+        self.assertIs(request.tenant, self.tenant)
+        set_tenant.assert_called_once_with(self.tenant)
         self.assertIn(
             "domain__istartswith",
             str(tenant_filter.call_args.args[0]),
