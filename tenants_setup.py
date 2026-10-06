@@ -19,37 +19,37 @@ country, country_created = Country.objects.get_or_create(
 state, state_created = State.objects.get_or_create(
     code='LAG',
     defaults={
-        'name': 'Rivers',
+        'name': 'Lagos',
         'country': country,
     },
 )
 
 lga, lga_created = LGA.objects.get_or_create(
-    name='Port Harcourt',
+    name='Ikeja',
     defaults={'state': state},
 )
 
 # Create or fetch a default facility type with required code field
 facility_type, facility_type_created = FacilityType.objects.get_or_create(
-    code='HOSP',
+    code='CLIN',
     defaults={
-        'name': 'Hospital',
+        'name': 'Clinic',
         'description': 'General healthcare facility',
     },
 )
 
 # Create or fetch a default subscription plan
 subscription_plan, plan_created = SubscriptionPlan.objects.get_or_create(
-    code='PREMIUM',
+    code='BASIC',
     defaults={
-        'name': 'Premium Plan',
-        'description': 'Premium plan for the public/system tenant',
-        'price_monthly': 60000,
-        'price_quarterly': 2400000,
-        'price_yearly': 7200000,
+        'name': 'Basic Plan',
+        'description': 'Basic plan for the public/system tenant',
+        'price_monthly': 30000,
+        'price_quarterly': 1200000,
+        'price_yearly': 3600000,
         'currency': 'NGN',
-        'max_users': 10,
-        'max_patients': 100,
+        'max_users': 5,
+        'max_patients': 50,
         'max_storage_gb': 1,
         'max_api_calls_per_day': 1000,
         'trial_period_days': 0,
@@ -70,8 +70,8 @@ public_tenant, tenant_created = Tenant.objects.get_or_create(
         # 'domain': 'hms-backend-l09g.onrender.com',
         # 'domain': '1145-102-90-124-57.ngrok-free.app',
         'domain': 'localhost',
-        'email': 'admin.app@onrender.com',
-        # 'email': 'admin.app@local.app.com',
+        # 'email': 'admin.app@onrender.com',
+        'email': 'admin.app@local.app.com',
         'phone': '+12345678903',
         'phone2': '',
         'address': 'System Address',
