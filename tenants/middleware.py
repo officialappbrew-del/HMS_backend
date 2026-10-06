@@ -90,10 +90,13 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
         if not host or host in {'localhost', '127.0.0.1', '0.0.0.0', '::1'}:
             if not explicit_subdomain or explicit_subdomain == 'admin':
                 return None
-            return Tenant.objects.filter(
+            tenant_query = (
                 Q(domain__iexact=explicit_subdomain)
                 | Q(domain__iexact=f'{explicit_subdomain}.localhost')
-            ).first()
+            )
+            if '.' not in explicit_subdomain:
+                tenant_query |= Q(domain__istartswith=f'{explicit_subdomain}.')
+            return Tenant.objects.filter(tenant_query).first()
 
         candidates = []
         if explicit_subdomain:
@@ -118,11 +121,14 @@ class HeaderTenantMiddleware(TenantMainMiddleware):
                 continue
             seen.add(cleaned)
 
-            tenant = Tenant.objects.filter(
+            tenant_query = (
                 Q(domain__iexact=cleaned)
                 | Q(domain__iexact=f'{cleaned}.localhost')
                 | Q(domain__iexact=cleaned.replace('.localhost', ''))
-            ).first()
+            )
+            if '.' not in cleaned:
+                tenant_query |= Q(domain__istartswith=f'{cleaned}.')
+            tenant = Tenant.objects.filter(tenant_query).first()
             if tenant:
                 return tenant
 

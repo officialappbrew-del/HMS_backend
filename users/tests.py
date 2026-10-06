@@ -220,6 +220,40 @@ class TenantLoginIsolationTests(SimpleTestCase):
         self.assertIs(resolved, self.tenant)
         self.assertIn('domain__iexact', str(tenant_filter.call_args))
 
+    def test_render_host_resolves_full_tenant_domain_from_subdomain_header(self):
+        from tenants.middleware import HeaderTenantMiddleware
+
+        self.tenant.domain = 'hospitalmanager-beta.vercel.app'
+        middleware = HeaderTenantMiddleware(lambda request: None)
+        request = RequestFactory().get(
+            '/api/v1/tenants/settings/current/',
+            HTTP_HOST='hms-backend-l09g.onrender.com',
+            HTTP_X_SUBDOMAIN='hospitalmanager-beta',
+        )
+        with patch('tenants.middleware.Tenant.objects.filter') as tenant_filter:
+            tenant_filter.return_value.first.return_value = self.tenant
+
+            resolved = middleware._resolve_tenant_from_host(request)
+
+        self.assertIs(resolved, self.tenant)
+        self.assertIn(
+            "domain__istartswith",
+            str(tenant_filter.call_args.args[0]),
+        )
+
+    def test_login_resolves_subdomain_from_configured_full_domain(self):
+        self.tenant.domain = 'hospitalmanager-beta.vercel.app'
+        with patch('users.views.Tenant.objects.filter') as tenant_filter:
+            tenant_filter.return_value.first.return_value = self.tenant
+
+            resolved = self.view._get_tenant_for_domain('hospitalmanager-beta')
+
+        self.assertIs(resolved, self.tenant)
+        self.assertIn(
+            "domain__istartswith",
+            str(tenant_filter.call_args.args[0]),
+        )
+
     def test_tenant_login_filters_shared_user_table_by_tenant(self):
         request = RequestFactory().post('/api/v1/auth/login/')
         empty_queryset = MagicMock()

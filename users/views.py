@@ -571,10 +571,16 @@ class AuthenticationView(APIView):
         for domain in sorted(candidate_domains):
             if not domain:
                 continue
-            tenant = Tenant.objects.filter(
+            domain_query = (
                 models_Q(domain__iexact=domain)
                 | models_Q(domain__iexact=f'{domain}.localhost')
                 | models_Q(domain__iexact=domain.replace('.localhost', ''))
+            )
+            if '.' not in domain:
+                domain_query |= models_Q(domain__istartswith=f'{domain}.')
+
+            tenant = Tenant.objects.filter(
+                domain_query
             ).first()
             if tenant:
                 return tenant
